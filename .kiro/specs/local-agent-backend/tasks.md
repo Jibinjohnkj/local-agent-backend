@@ -835,14 +835,44 @@ Each property test is one Hypothesis test with at least 100 examples, tagged `# 
 - [x] 24. Final checkpoint - Ensure all tests pass
   - Ensure all tests pass, ask the user if questions arise.
 
+- [ ] 25. Deliver streaming errors as SSE and pin the wire contract
+  - [-] 25.1 Rework HostJsonRpcDispatcher streaming error delivery
+    - Follow-up to completed task 20.8, which overrides `_generate_error_response`; replace that override in `a2a_server/dispatch.py` with an override of `_process_streaming_request` as specified in the design's "Streaming error delivery" section: keep the SDK `validate_version` decorator and add the strict 1.0 check (`accepts_version`) before dispatch; return an `_sse_events` async generator so admission (`HostRequestHandler._admit`) and handler start-up run on its first iteration and the response is always HTTP 200 `text/event-stream`
+    - In `_sse_events`: a rejection before any event yields exactly one `event: error` SSE event with the JSON-RPC 2.0 error response, then closes (`-32050` "Context is busy" and `-32602` "Task is not awaiting input" keep their exact message and plain `data`; other SDK `A2AError`s keep the SDK body; any other exception becomes `-32603` "Internal error", logged and not sent); a failure after k events yields one trailing error event, then closes; stop reading at the final event so a `failed` Task is never followed by an error event
+    - Add pure `jsonrpc_error_response(request_id, error)`; keep the `_create_response` override for the non-streaming path; move `HostRequestHandler._check_version` to the REST binding only
+    - _Requirements: 1.12, 1.14, 1.15, 1.16, 1.17, 1.18, 3.10_
+
+  - [ ]* 25.2 Write property test for streaming outcome framing
+    - File: `tests/property/test_streaming_framing.py`
+    - Use the ASGI app with scenario fakes: admission rejections (busy Context, not awaiting input, unknown Task, terminal Task, `SubscribeToTask` for a terminal Task) yield exactly one error event and no other event; admitted requests start with a Task_Snapshot; an injected failure after k events yields k result events plus one error event; a `failed` Task yields no error event
+    - **Property 62: Streaming outcome framing**
+    - **Validates: Requirements 1.16, 1.17, 3.10**
+
+  - [x] 25.3 Verify GetTask and CancelTask response shapes
+    - Confirm `GetTask` and `CancelTask` use the SDK non-streaming path with `application/json` JSON-RPC error bodies, and that the `GetTask` `result` is `MessageToDict(task)` with no `{"task": ...}` wrapper (members such as `id`, `contextId`, `status`, `artifacts` at the top level); fix the `_create_response` override or the result builder if either differs
+    - _Requirements: 1.19, 1.20_
+
+  - [ ]* 25.4 Update existing tests for the new streaming error form
+    - Update `tests/property/test_error_contract.py` (task 20.13) and `tests/integration/test_a2a_contract.py` (task 20.17) so streaming-method rejections are asserted as one SSE error event instead of an `application/json` body; keep the `SendMessage` (non-streaming) assertions unchanged
+    - _Requirements: 1.14, 1.15, 1.16, 1.19_
+
+  - [~] 25.5 Write the wire contract test
+    - File: `tests/integration/test_wire_contract.py` with golden files under `tests/integration/wire_golden/` (placeholders only `{task_id}`, `{context_id}`, `{timestamp}`), run against a real uvicorn socket
+    - Assert raw HTTP status, raw `Content-Type` (media type compared, charset tolerated), and body bytes for every case of 1.16 to 1.20: each streaming rejection, a failure after events, `GetTask` success and error, `CancelTask` error, and `test_pre_dispatch[...]` for `-32700`, `-32600`, `-32601`, `-32009`, and schema `-32602`
+    - Ensure the CI workflow from task 23.1 runs this file on all five runners
+    - _Requirements: 1.16, 1.17, 1.18, 1.19, 1.20, 1.21_
+
+- [~] 26. Checkpoint - Ensure all tests pass
+  - Ensure all tests pass, ask the user if questions arise.
+
 ## Notes
 
 - Tasks marked with `*` are optional and can be skipped for a faster MVP; integration fixtures (22.1, 22.2), scenario fakes (17.9), the storage fault-injection helper (10.2), and the migration fixture databases (10.7) are only needed by the optional tests
-- Each task references specific requirements for traceability; each of the design's 61 correctness properties has exactly one property-test sub-task (P33–P48 cover Requirement 17; P49–P56 and P61 cover Requirement 18 storage and its security; P57–P60 cover the A2A interface contract)
+- Each task references specific requirements for traceability; each of the design's 62 correctness properties has exactly one property-test sub-task (P33–P48 cover Requirement 17; P49–P56 and P61 cover Requirement 18 storage and its security; P57–P60 cover the A2A interface contract; P62 covers streaming error framing)
 - Storage property tests (P21, P49–P55, P61) and the scenario properties (P3, P12, P13, P14, P23) run against both `InMemorySessionStore` and `SQLiteSessionStore` where the design says so; each example uses its own `TemporaryDirectory`, and text strategies exclude lone surrogates, which ingress replaces with U+FFFD
 - P49 (11.3) uses `TaskRunner._build_request` and P53 (11.6) uses the kill-injection helper from 17.9, so the dependency graph schedules them after those tasks even though they sit next to the storage code they test
 - `src/local_agent/models.py`, `a2a_server/a2a_compat.py`, `a2a_server/errors.py`, `a2a_server/dispatch.py`, `mcp_client/mcp_compat.py`, and `src/local_agent/server.py` are additions to Appendix A that the design implies (shared runtime types, SDK name isolation, the A2A error contract, the dispatcher subclass, and the `BackendServer` subclass); `oscompat/env.py`, `oscompat/net.py`, `oscompat/_win32.py`, `oscompat/ctrl_break.py`, and `mcp_client/stdio_transport.py` are the design's own additions; `storage/task_store.py` is the `ProjectedTaskStore` adapter chosen in the design (not the SDK `DatabaseTaskStore`)
-- At implementation time, verify the pinned `a2a-sdk` (1.2.x), `mcp` (2.3.x), and `uvicorn` (>= 0.36, `capture_signals` override) against `a2a_compat.py`, `mcp_compat.py`, `stdio_transport.py`, and `server.py`; for `a2a-sdk` also re-check `JsonRpcDispatcher._generate_error_response`/`_create_response`, `A2A_ERROR_MAPPING`/`A2A_ERROR_REASONS`, missing-header version handling, the save-before-forward order, and continuation-snapshot "already exists" handling (guarded by 20.17 and 22.19); confirm the `macos-15-intel` runner label
+- At implementation time, verify the pinned `a2a-sdk` (1.2.x), `mcp` (2.3.x), and `uvicorn` (>= 0.36, `capture_signals` override) against `a2a_compat.py`, `mcp_compat.py`, `stdio_transport.py`, and `server.py`; for `a2a-sdk` also re-check `JsonRpcDispatcher._process_streaming_request`/`_create_response`, `A2A_ERROR_MAPPING`/`A2A_ERROR_REASONS`, missing-header version handling, the save-before-forward order, and continuation-snapshot "already exists" handling (guarded by 20.17 and 22.19); confirm the `macos-15-intel` runner label
 - Platform-specific tests use the `windows_only`, `posix_only`, `macos_only`, and `linux_only` markers from `tests/conftest.py`; pure OS-rule tests take `platform` as a parameter and run on every runner; integration tests never touch the developer's real per-user Storage_Directory
 - Run tests with `uv run pytest -q`, integration tests with `uv run pytest -m integration`, and lint/type checks with `uv run ruff check` and `uv run mypy src`; these work the same in PowerShell, bash, and zsh
 
@@ -866,7 +896,9 @@ Each property test is one Hypothesis test with at least 100 examples, tagged `# 
     { "id": 12, "tasks": ["11.6", "17.10", "17.11", "17.12", "17.13", "17.14", "17.15", "17.16", "17.17", "17.18", "17.19", "19.2", "19.3", "20.10", "20.11"] },
     { "id": 13, "tasks": ["20.12", "20.13", "20.14", "20.15", "20.16", "20.17", "20.18"] },
     { "id": 14, "tasks": ["20.19", "22.1", "22.2", "23.1"] },
-    { "id": 15, "tasks": ["22.3", "22.4", "22.5", "22.6", "22.7", "22.8", "22.9", "22.10", "22.11", "22.12", "22.13", "22.14", "22.15", "22.16", "22.17", "22.18", "22.19", "22.20"] }
+    { "id": 15, "tasks": ["22.3", "22.4", "22.5", "22.6", "22.7", "22.8", "22.9", "22.10", "22.11", "22.12", "22.13", "22.14", "22.15", "22.16", "22.17", "22.18", "22.19", "22.20"] },
+    { "id": 16, "tasks": ["25.1", "25.3"] },
+    { "id": 17, "tasks": ["25.2", "25.4", "25.5"] }
   ]
 }
 ```

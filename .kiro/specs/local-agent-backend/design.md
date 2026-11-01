@@ -26,7 +26,8 @@ The design keeps protocol-heavy code thin and pushes decision logic into small p
 | OS file locks | `fcntl.flock(fd, LOCK_EX \| LOCK_NB)` raises `BlockingIOError` when held elsewhere; flock locks belong to the open file description and the kernel drops them when the process dies. On Windows, `msvcrt.locking(fd, LK_NBLCK, 1)` raises `OSError` when the byte is locked; the OS releases locks of a terminated process, "but the time it takes … depends upon available system resources" ([LockFileEx](https://learn.microsoft.com/windows/win32/api/fileapi/nf-fileapi-lockfileex)). | `storage/lock.py` uses these two calls. The Windows release delay is why the crash test waits for the killed process handle to be signaled before restarting; the Backend itself never waits (18.26). |
 | Windows ACLs | Since 3.13, `os.mkdir(path, 0o700)` on Windows applies an ACL, but it grants the `OWNER RIGHTS` principal rather than only the user SID ([cpython#128038](https://github.com/python/cpython/issues/128038)). It also does nothing for existing directories or files. | `oscompat/permissions.py` builds the protected DACL itself through ctypes (`advapi32`): one `ACCESS_ALLOWED_ACE` with `FILE_ALL_ACCESS` for the token user SID, `OBJECT_INHERIT_ACE \| CONTAINER_INHERIT_ACE` on the directory, applied with `SetNamedSecurityInfoW(..., DACL_SECURITY_INFORMATION \| PROTECTED_DACL_SECURITY_INFORMATION, ...)` (17.37). |
 | SDK error mapping | JSON-RPC errors are built by `build_error_response`, which looks the exception's **exact type** up in `JSON_RPC_ERROR_CODE_MAP` (unknown types become `-32603`) and puts `data` = a list of `google.rpc.ErrorInfo` details whose `metadata` is `error.data` ([`response_helpers.py`](https://github.com/a2aproject/a2a-python/blob/main/src/a2a/server/request_handlers/response_helpers.py), [`error_handlers.py`](https://github.com/a2aproject/a2a-python/blob/main/src/a2a/utils/error_handlers.py), [`errors.py`](https://github.com/a2aproject/a2a-python/blob/main/src/a2a/utils/errors.py)). REST errors use `A2A_ERROR_MAPPING` (exact type → HTTP status, gRPC status, reason) with the same details. `JSONRPCError` is a pydantic model, not an exception, so a handler cannot raise a custom code. `create_jsonrpc_routes` builds a plain `JsonRpcDispatcher` and accepts no dispatcher class ([`jsonrpc_routes.py`](https://github.com/a2aproject/a2a-python/blob/main/src/a2a/server/routes/jsonrpc_routes.py)). | 1.14/1.15 need `data` to be the plain object, so the Backend builds its JSON-RPC route from `HostJsonRpcDispatcher(JsonRpcDispatcher)`, which renders `HostContractError`s itself (see "A2A interface contract"). For REST it registers its two error types in `A2A_ERROR_MAPPING` and `A2A_ERROR_REASONS` (409 and 400). |
-| A2A-Version negotiation | The dispatcher wraps request processing in `validate_version("1.0")`: a missing or empty header is read as `0.3`, and any header whose **major** version is 1 is accepted (`1.1` passes) ([`version_validator.py`](https://github.com/a2aproject/a2a-python/blob/main/src/a2a/utils/version_validator.py)). With `enable_v0_3_compat=False` (the default), a missing header therefore yields `VersionNotSupportedError` (`-32009`). | Missing header: no override (1.13); the integration test records `-32009` as the observed behaviour of the pinned release. Present header: `HostRequestHandler` additionally rejects anything other than 1.0 (`1.1`, `1.0.1`, `2.0`, garbage) with the SDK's `VersionNotSupportedError` (1.12). |
+| A2A-Version negotiation | The dispatcher wraps request processing in `validate_version("1.0")`: a missing or empty header is read as `0.3`, and any header whose **major** version is 1 is accepted (`1.1` passes) ([`version_validator.py`](https://github.com/a2aproject/a2a-python/blob/main/src/a2a/utils/version_validator.py)). With `enable_v0_3_compat=False` (the default), a missing header therefore yields `VersionNotSupportedError` (`-32009`). | Missing header: no override (1.13); the integration test records `-32009` as the observed behaviour of the pinned release. Present header: the Backend additionally rejects anything other than 1.0 (`1.1`, `1.0.1`, `2.0`, garbage) with the SDK's `VersionNotSupportedError` (1.12). On the JSON-RPC binding this check runs in `HostJsonRpcDispatcher` at the same point as the SDK decorator, before the request handler is invoked, so every `-32009` has the same wire form (1.18); `HostRequestHandler._check_version` remains for the REST binding. |
+| SDK JSON-RPC streaming error delivery (read from `main`) | Pre-handler checks in `JsonRpcDispatcher.handle_requests` return `_generate_error_response(...)`, a Starlette `JSONResponse` with HTTP 200 and `application/json`: `JSONDecodeError`/`UnicodeDecodeError` → `JSONParseError` (`-32700`, `id: null`); batch body, `jsonrpc` ≠ `"2.0"`, boolean `id`, missing `method`, base-validation failure, or HTTP 413 → `InvalidRequestError` (`-32600`); a method absent from `METHOD_TO_MODEL` → `MethodNotFoundError` (`-32601`); a `ParseDict` failure → `InvalidParamsError` (`-32602`). `_process_streaming_request` is an `async def` decorated with `validate_version("1.0")`, so a version mismatch raises `VersionNotSupportedError` when it is awaited, before the handler is called, and the outer `except A2AError` renders it as the same `JSONResponse`. Inside, the dispatcher **eagerly awaits `anext(stream)`** "to trigger validation/upfront errors". Any `A2AError` raised by the handler before its first yield (admission errors, `TaskNotFoundError` from `_setup_active_task` or `on_subscribe_to_task`, `UnsupportedOperationError` "terminal state" from `ActiveTask.start` or `on_subscribe_to_task`) therefore escapes to the same outer handler and becomes an **`application/json` body, not an SSE stream** ([`jsonrpc_dispatcher.py`](https://github.com/a2aproject/a2a-python/blob/main/src/a2a/server/routes/jsonrpc_dispatcher.py), [`default_request_handler_v2.py`](https://github.com/a2aproject/a2a-python/blob/main/src/a2a/server/request_handlers/default_request_handler_v2.py), [`active_task.py`](https://github.com/a2aproject/a2a-python/blob/main/src/a2a/server/agent_execution/active_task.py), [`version_validator.py`](https://github.com/a2aproject/a2a-python/blob/main/src/a2a/utils/version_validator.py)). Errors after the first event are caught in `_wrap_stream` (`A2AError` → `build_error_response`) or in `_create_response`'s `event_generator` (any other exception → `InternalError(str(e))`), then sent as one SSE event `{"event": "error", "data": json_utils.dumps(...)}` after which the generator ends. `json_utils.dumps` is `json.dumps(obj, ensure_ascii=False)` (default `", "`/`": "` separators); `JSONResponse` renders compact JSON ([`json_utils.py`](https://github.com/a2aproject/a2a-python/blob/main/src/a2a/utils/json_utils.py)). sse-starlette encodes a dict event as `event: <name>\r\n` then `data: <line>\r\n` then `\r\n` ([`event.py`](https://github.com/sysid/sse-starlette/blob/main/sse_starlette/event.py)). `JSONRPC20Response(...).data` sets `result`/`error`, then `id`, then appends `jsonrpc`, so SDK bodies serialize in that key order ([json-rpc `jsonrpc2.py`](https://github.com/pavlov99/json-rpc/blob/master/jsonrpc/jsonrpc2.py)). On a consumer failure the SDK enqueues the exception to subscribers, and the subscriber raises it ([`active_task.py`](https://github.com/a2aproject/a2a-python/blob/main/src/a2a/server/agent_execution/active_task.py)). | The SDK's eager `anext` is incompatible with 1.16. `HostJsonRpcDispatcher` overrides `_process_streaming_request` so that admission and handler start-up run **inside** the SSE generator: the response is always `200 text/event-stream`, and a post-dispatch error becomes exactly one `event: error` SSE event (see "Streaming error delivery"). Pre-dispatch errors keep the SDK's `application/json` form, which the Backend records per code (1.18). Uncertain points, all pinned by `test_wire_contract.py`: the read was from `main` rather than the 1.2.x tag; `Content-Type` is expected to be `text/event-stream; charset=utf-8` because Starlette appends a charset to `text/*` media types; and it is not confirmed whether the SDK forwards a `failed` Task event before re-raising a consumer exception. |
 | ProtoJSON enums | The dispatcher serializes responses and stream events with protobuf `MessageToDict(...)`, whose default is enum **names** (`use_integers_for_enums=False`) and camelCase field names ([`jsonrpc_dispatcher.py`](https://github.com/a2aproject/a2a-python/blob/main/src/a2a/server/routes/jsonrpc_dispatcher.py)). | `TASK_STATE_*` and `ROLE_*` come out by default (1.10). The Backend's own error `data` uses `TaskState.Name(...)`. A contract test asserts the raw bytes of every response and event type on both bindings. |
 | `mcp` client API | `mcp` 2.3.x: `ClientSession(read, write, read_timeout_seconds: float \| None)`, `call_tool(name, arguments, read_timeout_seconds: float \| None)`, `list_tools(params=PaginatedRequestParams(cursor=...))`, result fields are snake_case (`is_error`, `next_cursor`, `structured_content`) ([ClientSession API](https://py.sdk.modelcontextprotocol.io/api/mcp/client/session/)). `ClientSession` accepts any pair of anyio memory streams of `SessionMessage`; `sse_client(url, ...)` remains for legacy SSE servers; the HTTP transports use `httpx2` ([Client transports](https://py.sdk.modelcontextprotocol.io/client/transports/)). | A `McpSessionAdapter` wraps the SDK so version drift (1.x camelCase vs 2.x snake_case, `timedelta` vs `float` timeouts, the 2.x `mcp_types` module split) touches one file. SSE servers keep using the SDK's `sse_client`. |
 | `mcp` `stdio_client` process handling | Read from the SDK source on the 2.x line ([`client/stdio.py`](https://github.com/modelcontextprotocol/python-sdk/blob/main/src/mcp/client/stdio.py), [`os/win32/utilities.py`](https://github.com/modelcontextprotocol/python-sdk/blob/main/src/mcp/os/win32/utilities.py), [`os/posix/utilities.py`](https://github.com/modelcontextprotocol/python-sdk/blob/main/src/mcp/os/posix/utilities.py)). `stdio_client` owns process creation and takes only `command`, `args`, `env`, `cwd`, `encoding`; there is no hook for creation flags, process groups, or job objects. POSIX: `start_new_session=True`, shutdown is close stdin → 2 s → `SIGTERM` to the group → 2 s → `SIGKILL`. Windows: `CREATE_NO_WINDOW` (no `CREATE_NEW_PROCESS_GROUP`); a pywin32 job object with `KILL_ON_JOB_CLOSE` is assigned **after** the spawn (the SDK notes that children started before assignment escape the job); shutdown is close stdin → 2 s → `TerminateJobObject` (no `CTRL_BREAK_EVENT`, no `taskkill` fallback). Grace periods are module constants. The command is resolved with `shutil.which` against the **Backend's** `PATH`, then a fixed `.cmd/.bat/.exe/.ps1` list, and an unresolved name is passed through silently. Arguments go through `subprocess.list2cmdline`, which does not quote cmd.exe metacharacters for `.cmd`/`.bat` targets. The environment is an allow-list (`PATH`, `PATHEXT`, `SYSTEMROOT`, …) merged with `env` by a case-sensitive dict union. | The SDK transport cannot meet 17.4–17.12, 17.15, or 17.22 without patching private functions. The Backend therefore ships its own stdio transport (`mcp_client/stdio_transport.py`) that keeps the SDK's message framing and types and feeds a normal `ClientSession`, with process handling in `oscompat/process.py`. The SDK's Windows job object code is not used, so no process ends up in two Backend-managed jobs. See key decision 6. |
@@ -325,11 +326,9 @@ The card has `capabilities.streaming=True`, `default_input_modes=["text/plain"]`
 
 ```python
 def build_app(cfg: BackendConfig, deps: Deps) -> Starlette:
-    install_error_mappings()  # REST: ContextBusyError → 409, TaskNotAwaitingInputError → 400
-    handler = HostRequestHandler(
-        HostAgentExecutor(deps), task_store=deps.task_store, agent_card=card
-    )
-    jsonrpc = HostJsonRpcDispatcher(handler)  # renders HostContractError exactly (1.14, 1.15)
+    install_error_mappings()                             # REST: ContextBusyError → 409, TaskNotAwaitingInputError → 400
+    handler = HostRequestHandler(HostAgentExecutor(deps), task_store=deps.task_store, agent_card=card)
+    jsonrpc = HostJsonRpcDispatcher(handler)             # renders HostContractError exactly; streaming errors as SSE (1.14–1.17)
     routes = [
         *create_agent_card_routes(card),  # /.well-known/agent-card.json
         Route(
@@ -407,7 +406,9 @@ class HostAgentExecutor(AgentExecutor):
     async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None: ...
 ```
 
-`_check_version(context)` reads `context.state["headers"]`. A present `A2A-Version` header that `accepts_version` (pure, see "A2A interface contract") rejects raises the SDK's `VersionNotSupportedError` (1.12). An absent header is left to the SDK (1.13).
+`_check_version(context)` reads `context.state["headers"]`. A present `A2A-Version` header that `accepts_version` (pure, see "A2A interface contract") rejects raises the SDK's `VersionNotSupportedError` (1.12). An absent header is left to the SDK (1.13). On the JSON-RPC binding `HostJsonRpcDispatcher` applies the same check before it invokes the handler (1.18), so `_check_version` only fires on the REST binding; on JSON-RPC it is a redundant guard that never triggers.
+
+`on_message_send_stream` and `on_subscribe_to_task` are async generators: calling them runs nothing. `_check_version`, `_admit`, and the SDK's `_setup_active_task`/`ActiveTask.start` run on the first `anext()`, which `HostJsonRpcDispatcher` performs inside the SSE response generator (1.16).
 
 `_admit(params, context)` runs under a per-Context `asyncio.Lock`. It reads committed state from the Session_Store and the in-memory `TaskRunnerRegistry`:
 
@@ -468,7 +469,7 @@ async def execute(self, context, event_queue):
     await runner.wait_stream_closing()  # completed/failed/canceled/input-required
 ```
 
-- **First event (3.10–3.13).** The executor's first enqueue on every streaming request is a `Task` snapshot. Because message streams subscribe with `include_initial_task=False`, that snapshot is the first SSE event. For a new Task the SDK consumer saves it (the creation commit) before forwarding it. For a continuation the SDK forwards the stored Task, which `ProjectedTaskStore.get` builds from the committed row. Committing `working` before enqueuing guarantees the snapshot reads `TASK_STATE_WORKING` and never `TASK_STATE_INPUT_REQUIRED` (3.12). `transition(..., emit=False)` commits without enqueuing, and `emit_current_status()` then enqueues the committed state's Status_Event. Persist-before-emit is unchanged.
+- **First event (3.10–3.13).** This applies only to **admitted** requests, meaning those for which `_admit` and the SDK start-up checks passed and `execute()` was reached. A rejected request never reaches `execute()`, and its stream carries only the single error event of 1.16. The executor's first enqueue on every admitted streaming request is a `Task` snapshot. Because message streams subscribe with `include_initial_task=False`, that snapshot is the first SSE event. For a new Task the SDK consumer saves it (the creation commit) before forwarding it. For a continuation the SDK forwards the stored Task, which `ProjectedTaskStore.get` builds from the committed row. Committing `working` before enqueuing guarantees the snapshot reads `TASK_STATE_WORKING` and never `TASK_STATE_INPUT_REQUIRED` (3.12). `transition(..., emit=False)` commits without enqueuing, and `emit_current_status()` then enqueues the committed state's Status_Event. Persist-before-emit is unchanged.
 - **Creation failure (18.30).** If the creation commit fails, `save()` raises, so the SDK consumer delivers the error to the request (`StorageWriteError`, an `InternalError` subclass with the message "Storage could not be written") and `created` raises. The runner is never started, and no Task or Context row exists. `save()` ignores the SDK's follow-up "failed task for a failed request" write for an unknown `task_id` (`storage/task_store.py`).
 - **Cancel.** `cancel()` attaches the cancel request's `event_queue` and calls `runner.cancel()`, which returns after the runner commits and emits `canceled` (≤2 s, 2.7, 14.4). `HostRequestHandler.on_cancel_task` checks the Session_Store first. Unknown → `TaskNotFoundError` (2.11). Terminal, including recovered Tasks → `TaskNotCancelableError` (2.12, 18.17). Non-terminal with a runner → `super()`, which reaches `executor.cancel`. Non-terminal without a runner cannot happen within one process (Restart_Recovery leaves no non-terminal Task); it is logged at error level and answered with `TaskNotCancelableError`, so the SDK's direct `CANCELED` store write is never taken.
 
@@ -550,6 +551,11 @@ This contract is between the Backend and the Chat_App; both sides test against i
 | `A2A-Version` present and not 1.0 | SDK `VersionNotSupportedError`, `-32009` | SDK mapping (400, `VERSION_NOT_SUPPORTED`) | 1.12 |
 | `A2A-Version` absent | whatever the pinned SDK does; observed on the 1.2.x line: read as `0.3` → `-32009` | same, observed | 1.13 |
 | Storage write failed at Task creation | SDK `InternalError` subclass, `-32603`, message "Storage could not be written" | 500 | 18.30 |
+| Any of the rows above, or any other post-dispatch error, on `SendStreamingMessage` / `SubscribeToTask` | HTTP 200, `text/event-stream`, exactly one `event: error` SSE event whose `data` is the JSON-RPC error response; no Task_Snapshot, Status_Event, or Token_Event; stream closed ≤ 1 s later | n/a (REST errors use the REST rows) | 1.16 |
+| Failure after events were sent on a streaming method, other than a `failed` Task transition | One trailing `event: error` SSE event with the JSON-RPC error response; stream closed ≤ 1 s later | n/a | 1.17 |
+| Pre-dispatch error (`-32700`, `-32600`, `-32601`, `-32009`, schema `-32602`) on any method | HTTP 200, `application/json` JSON-RPC error body (SDK form; table "Pre-dispatch error forms") | n/a | 1.9, 1.18 |
+| `GetTask` / `CancelTask` error | HTTP 200, `application/json` JSON-RPC error body | SDK REST mapping | 1.19 |
+| `GetTask` success | HTTP 200, `application/json`, `result` is the `Task` object itself | SDK REST | 1.20 |
 
 The REST rows follow the SDK's REST error format (google.rpc `Status` with typed `details`), which is the A2A HTTP+JSON convention. "The same data fields" are the `ErrorInfo.metadata` entries; all values are strings, as `ErrorInfo.metadata` requires.
 
@@ -592,21 +598,136 @@ def install_error_mappings() -> None:  # idempotent; REST only
 def accepts_version(header: str) -> bool: ...  # pure (1.11, 1.12)
 
 
+def jsonrpc_error_response(request_id, error: BaseException) -> dict: ...   # pure; see "Streaming error delivery"
+
 class HostJsonRpcDispatcher(JsonRpcDispatcher):
-    def _generate_error_response(
-        self, request_id, error
-    ): ...  # HostContractError → exact body (streaming path)
-    def _create_response(self, call_context, handler_result): ...  # non-streaming path, see below
+    @validate_version(PROTOCOL_VERSION_1_0)                       # SDK rule, unchanged (1.13)
+    async def _process_streaming_request(self, request_id, request_obj, context):
+        self._check_version_strict(context)                       # accepts_version; raises before dispatch (1.12, 1.18)
+        return self._sse_events(request_id, request_obj, context) # async generator; nothing awaited yet (1.16)
+    async def _sse_events(self, request_id, request_obj, context): ...   # admission + start-up + events + errors
+    def _create_response(self, call_context, handler_result): ... # non-streaming HostContractError rendering
 ```
 
-- **Why a dispatcher subclass.** The SDK maps errors by exact type and wraps `data` in `ErrorInfo` details, so no handler-side exception can produce `data: {"context_id": …}` (research table). `_admit` stores the error in `context.state["host_contract_error"]` and raises it. It is an `A2AError`, so the SDK aborts the request through its normal error path with no Task created. The dispatcher then renders it:
-  - Streaming (`SendStreamingMessage`): the SDK fetches the first event eagerly, so the error surfaces before any SSE response starts. It reaches the outer `except A2AError` and goes to `_generate_error_response`, which the subclass overrides to return `{"jsonrpc": "2.0", "id": <id>, "error": err.jsonrpc_error()}` as a plain JSON response.
-  - Non-streaming (`SendMessage`): the SDK builds its generic error dict and passes it to `_create_response(call_context, …)`. The override replaces the dict when `call_context.state` holds a `HostContractError`.
-  - Both methods are private SDK API. The pinned version is guarded by `test_error_contract_jsonrpc` (both methods, both errors, request ID echoed) and `test_error_contract_rest`.
-- **Fallback if the SDK changes.** If a later SDK release removes either hook, the same rendering moves into a small ASGI wrapper around the JSON-RPC route that replays the request body and rewrites error bodies whose `ErrorInfo.reason` is `CONTEXT_BUSY` or `INVALID_PARAMS` with a Backend-owned marker. The contract tests stay the same.
+- **Why a dispatcher subclass.** The SDK maps errors by exact type and wraps `data` in `ErrorInfo` details, so no handler-side exception can produce `data: {"context_id": …}` (research table). The SDK's streaming path also turns every error raised before the first event into an `application/json` body, which 1.16 forbids. `_admit` stores the error in `context.state["host_contract_error"]` and raises it. It is an `A2AError`, so the SDK aborts the request through its normal error path with no Task created. The dispatcher then renders it:
+  - Streaming (`SendStreamingMessage`, `SubscribeToTask`): the error is raised inside `_sse_events` and becomes the single SSE error event (see "Streaming error delivery").
+  - Non-streaming (`SendMessage`): the SDK builds its generic error dict and passes it to `_create_response(call_context, …)`. The override replaces the dict with `jsonrpc_error_response(request_id, err)` when `call_context.state` holds a `HostContractError`. The response is a `JSONResponse` (`application/json`).
+  - The base `_generate_error_response` is no longer overridden. After this change it only sees pre-dispatch errors (including the streaming methods' `-32009`) and unexpected exceptions outside the handler, all of which keep the SDK form (1.18).
+  - `_process_streaming_request` and `_create_response` are private SDK API. The pinned version is guarded by `test_wire_contract.py` and `test_error_contract_rest`.
+- **Fallback if the SDK changes.** If a later SDK release removes or renames either hook, `HostJsonRpcDispatcher` takes over `handle_requests` for the two streaming methods only. It runs the SDK's own pre-dispatch steps (`request.json()`, `JSONRPC20Request.from_data`, `METHOD_TO_MODEL`, `ParseDict`, `validate_version`) through the base class's public behaviour, then calls `_sse_events` directly. All other methods are delegated unchanged. The contract tests stay the same.
+
+#### Streaming error delivery (1.16, 1.17)
+
+`_sse_events` is the only producer of SSE events on the JSON-RPC binding. The SDK's `_create_response` wraps it in an `EventSourceResponse` without changes. Starlette sends the response start line (`200`, `text/event-stream; charset=utf-8`) before the first item is pulled, so admission runs after the headers are committed and every outcome is delivered on the stream.
+
+```python
+async def _sse_events(self, request_id, request_obj, context):
+    method = context.state["method"]
+    stream = (self.request_handler.on_message_send_stream(request_obj, context)
+              if method == "SendStreamingMessage"
+              else self.request_handler.on_subscribe_to_task(request_obj, context))
+    sent = 0
+    try:
+        async with aclosing(stream):                      # releases the reservation and the SDK subscription
+            async for event in stream:                    # first anext(): _check_version, _admit, SDK start-up
+                yield to_jsonrpc_result(request_id, event); sent += 1    # SDK _map_event equivalent, MessageToDict
+                if is_stream_closing(event):              # final Status_Event / Task in terminal or input-required state
+                    return                                # stop reading: nothing after a final event (3.5, 2.6)
+    except Exception as exc:                              # HostContractError, any A2AError, or anything else
+        log_stream_error(request_id, method, exc, events_sent=sent)   # traceback logged, redacted (16.10)
+        yield jsonrpc_error_response(request_id, exc)     # exactly one error event, then the generator ends
+```
+
+- **Error item shape.** `jsonrpc_error_response(request_id, exc)` returns a dict that the SDK's `event_generator` serializes as `{"event": "error", "data": json_utils.dumps(item)}`, which is the same framing the SDK uses for its own mid-stream errors. The dict is built as follows:
+  - `HostContractError` → `JSONRPC20Response(error=exc.jsonrpc_error(), _id=request_id).data`. For `-32050` and `-32602` this gives exactly `code`, `message` (`"Context is busy"` / `"Task is not awaiting input"`), and the plain `data` object of 1.14/1.15, with no `ErrorInfo` wrapping.
+  - Any other `A2AError` → `build_error_response(request_id, exc)`, the SDK's own body (code from `JSON_RPC_ERROR_CODE_MAP`, `message` = `str(exc)`, `data` = the SDK's `ErrorInfo` list when the SDK defines one). Examples are `-32001` Task not found (2.11), `-32004` "Task … is in terminal state: TASK_STATE_COMPLETED" (2.8, `SubscribeToTask` on a terminal Task), and `-32603` "Storage could not be written" (18.30).
+  - Any other exception → `-32603` with the fixed message `"Internal error"`. The exception text is logged and never sent, unlike the SDK's `InternalError(str(e))`, so no secret or stack trace reaches the client (2.6, 16.10).
+  - The request `id` is echoed from `context.state["request_id"]`, which the dispatcher set from the parsed request.
+- **Exactly one event, nothing before it (1.16).** Every rejection path of `_admit` and of the SDK start-up (`_setup_active_task`, `ActiveTask.start`, `on_subscribe_to_task`'s store check) raises before the handler's first `yield`. So `sent == 0` when the error event is produced, and the stream is `event: error` + `data:` + blank line, then end of body. No Task, Context, reservation, or event exists for the request. A creation commit failure (18.30) also raises before the first `yield`, because the SDK consumer saves the snapshot before forwarding it and delivers the save error instead of the snapshot. The 1-second close bound holds because the generator returns immediately after the error item and `aclosing` only releases in-memory state.
+- **Errors after events (1.17).** When `sent > 0`, the same `except` clause produces one trailing error event and ends the stream. This covers SDK-raised errors on the subscription (`InvalidAgentResponseError`, a consumer exception delivered to subscribers, a storage error surfaced by the SDK's save of a forwarded event) and Backend bugs outside the runner. The Task itself is not changed by the dispatcher. If the runner is still alive it keeps running detached (3.6), and get-task reports its true state.
+- **Distinguishing a `failed` Task from a stream error.** A Task that fails under 2.6 or 3.8 is reported in-band: the runner commits `failed` and the stream carries a normal `result` event (`statusUpdate.status.state = TASK_STATE_FAILED`, final). `_sse_events` stops reading after that final event, so no JSON-RPC `error` event can follow it, even if the SDK later raises (its own `on_message_send` notes that "a FAILED task may be followed by a producer exception"). The Chat_App therefore sees either a `result` event with `TASK_STATE_FAILED`, meaning the Task failed, or an `error` event (`event: error`, `error` member), meaning the request or stream failed. A stream never carries both.
+- **SubscribeToTask.** The same generator serves `SubscribeToTask`. Unknown Task → `-32001`; Task in `completed`/`failed`/`canceled` (including Tasks finalized by Restart_Recovery) → the SDK's `-32004` terminal-state error. Both arrive as the single SSE error event. An admitted subscription starts with the SDK's initial `Task` (`include_initial_task=True`).
+
+#### Pre-dispatch error forms (1.18)
+
+"Dispatch" means the point at which the dispatcher invokes the request-handler method. Everything before it is SDK code in `handle_requests` and the `validate_version` decorator, and keeps the SDK's form:
+
+| Code | Raised by (pinned SDK) | Applies to streaming methods? | Form on the wire | Body (SDK key order) | Pinned by |
+|---|---|---|---|---|---|
+| `-32700` Parse error | `handle_requests`: `request.json()` raises `JSONDecodeError`/`UnicodeDecodeError` → `JSONParseError(str(e))` | yes; the method is unknown at this point | `application/json`, HTTP 200 | `{"error":{"code":-32700,"message":"<decoder message>"},"id":null,"jsonrpc":"2.0"}` | `test_wire_contract.py::test_pre_dispatch[parse]` |
+| `-32600` Invalid request | `handle_requests`: batch array, `jsonrpc` ≠ `"2.0"`, boolean `id`, missing `method`, base-validation failure, HTTP 413 | yes | `application/json`, HTTP 200 | `{"error":{"code":-32600,"message":"Invalid request: 'jsonrpc' must be exactly '2.0'"},"id":7,"jsonrpc":"2.0"}` | `…[invalid_request]` |
+| `-32601` Method not found | `handle_requests`: method not in `METHOD_TO_MODEL` | n/a (an unknown method is never a streaming method) | `application/json`, HTTP 200 | `{"error":{"code":-32601,"message":"Method not found"},"id":7,"jsonrpc":"2.0"}` | `…[method_not_found]` |
+| `-32009` VersionNotSupported | `validate_version("1.0")` on `_process_streaming_request` / `_process_non_streaming_request` (missing header → `0.3`, other majors); `HostJsonRpcDispatcher._check_version_strict` (`1.1`, `1.0.1`, garbage) at the same point | yes | `application/json`, HTTP 200 | `{"error":{"code":-32009,"message":"A2A version '2.0' is not supported by this handler. Expected version '1.0'.","data":[…]},"id":7,"jsonrpc":"2.0"}` | `…[version_missing]`, `…[version_2_0]`, `…[version_1_1]` |
+| `-32602` schema Invalid params (1.9) | `handle_requests`: `ParseDict` failure → `InvalidParamsError(data={"parseError": …})` | yes | `application/json`, HTTP 200 | SDK form | `…[invalid_params_schema]` |
+
+The message strings and the exact `data` content in this table are the expected values. `test_wire_contract.py` records the bytes the pinned release actually produces (for example the `MethodNotFoundError` default message and the `ErrorInfo` list for `-32009`), and a mismatch fails CI. The `-32602` `Task is not awaiting input` error of 1.15 is post-dispatch and takes the SSE form on streaming methods. The Chat_App treats any `application/json` body received for a streaming request as a generic error (1.18 interface contract). Authentication (401), loopback guard (403), and CORS failures happen in middleware before JSON-RPC parsing and are outside 1.16–1.18.
+
+#### GetTask and CancelTask (1.19, 1.20)
+
+Both are non-streaming methods and take the SDK path with no Backend override. Results come from `_handle_get_task` / `_handle_cancel_task`: `MessageToDict(task, preserving_proto_field_name=False)` placed directly in `JSONRPC20Response(result=…)`. So `result` is the `Task` itself (`id`, `contextId`, `status`, `artifacts`, … at the top level of `result`). There is no `{"task": …}` wrapper; that wrapper (`SendMessageResponse`) appears only on `SendMessage`. `MessageToDict` omits fields that hold default values, so a Task with no artifacts has no `artifacts` member. Errors (`-32001` unknown Task, `-32002` not cancelable, `-32009`, `-32602`) come from `build_error_response` in the non-streaming branch of `handle_requests`, are returned through `_create_response` as a `JSONResponse` (`application/json`, HTTP 200), and are never SSE. The `_create_response` override changes only bodies whose context holds a `HostContractError`, which `GetTask`/`CancelTask` never raise.
+
+#### Wire contract test (1.21)
+
+`tests/integration/test_wire_contract.py` starts the Backend under a real uvicorn server on an ephemeral loopback port, with the fake LLM, the echo MCP fixture, a fixed `Clock`, and a temporary SQLite Storage_Directory. It talks to the server with `httpx.AsyncClient` over TCP, never through `ASGITransport`, and reads each response with `client.stream(...)` and `aread()` so it sees the raw bytes. For each case it asserts:
+- `response.status_code`;
+- `response.headers["content-type"]`, compared as the raw header string (`text/event-stream; charset=utf-8` or `application/json`);
+- the full body bytes against `tests/integration/wire_golden/<case>.bin`.
+
+Values the test cannot fix in advance are substituted into the golden template before the byte comparison: `{task_id}`, `{context_id}` (both known to the test from earlier responses or chosen by it), and `{timestamp}` (SDK-stamped status times, read from the same response). No other placeholder is allowed, so any other byte difference fails. For streaming error cases the test also asserts that the body ends within 1 s after the error event's terminating blank line arrives.
+
+| Case | Request | Expected |
+|---|---|---|
+| `stream_busy` | `SendStreamingMessage`, new message to a Context with an Active_Task | 200, SSE, one `-32050` error event with plain `data` (1.14, 1.16) |
+| `stream_not_awaiting` | `SendStreamingMessage` continuation for a `working` Task | 200, SSE, one `-32602` event with `{"task_id","state":"TASK_STATE_WORKING"}` (1.15, 1.16) |
+| `stream_unknown_task` | `SendStreamingMessage` with an unknown `task_id` | 200, SSE, one `-32001` event (2.11, 1.16) |
+| `stream_terminal_task` | `SendStreamingMessage` to a `completed` Task | 200, SSE, one `-32004` event (2.8, 1.16) |
+| `subscribe_terminal` / `subscribe_unknown` | `SubscribeToTask` for a `completed` / unknown Task | 200, SSE, one `-32004` / `-32001` event (1.16) |
+| `stream_storage_create_fail` | `SendStreamingMessage` with the creation commit forced to fail | 200, SSE, one `-32603` "Storage could not be written" event (18.30, 1.16) |
+| `stream_error_after_events` | `SendStreamingMessage` with a test-only executor hook that raises a non-runner exception after the snapshot | 200, SSE, the `Task` snapshot event, then one `-32603` "Internal error" event, then end (1.17) |
+| `stream_task_failed` | `SendStreamingMessage` with the fake LLM unreachable | 200, SSE, snapshot, statuses, final `TASK_STATE_FAILED` status event, and **no** error event (2.6, 1.17) |
+| `stream_admitted` | `SendStreamingMessage` new Task | first event `result.task.status.state == "TASK_STATE_SUBMITTED"` (3.10, 3.11) |
+| `pre_dispatch[...]` | each row of the 1.18 table, sent as `SendStreamingMessage` | 200, `application/json`, golden body (1.18) |
+| `get_task_ok` | `GetTask` for a completed Task | 200, `application/json`, `result` is the Task, top-level `id`/`contextId`/`status`/`artifacts`, no `task` key (1.20) |
+| `get_task_unknown` / `cancel_unknown` / `cancel_terminal` | `GetTask` / `CancelTask` errors | 200, `application/json`, `-32001` / `-32001` / `-32002` (1.19) |
+
+Example expected raw responses (`\r\n` shown as line breaks; IDs illustrative):
+
+```http
+HTTP/1.1 200 OK
+content-type: text/event-stream; charset=utf-8
+
+event: error
+data: {"error": {"code": -32050, "message": "Context is busy", "data": {"context_id": "ctx-1", "active_task_id": "task-1"}}, "id": 7, "jsonrpc": "2.0"}
+
+```
+
+```http
+HTTP/1.1 200 OK
+content-type: text/event-stream; charset=utf-8
+
+event: error
+data: {"error": {"code": -32602, "message": "Task is not awaiting input", "data": {"task_id": "task-1", "state": "TASK_STATE_WORKING"}}, "id": 8, "jsonrpc": "2.0"}
+
+```
+
+```http
+HTTP/1.1 200 OK
+content-type: application/json
+
+{"error":{"code":-32601,"message":"Method not found"},"id":9,"jsonrpc":"2.0"}
+```
+
+```http
+HTTP/1.1 200 OK
+content-type: application/json
+
+{"result":{"id":"task-1","contextId":"ctx-1","status":{"state":"TASK_STATE_COMPLETED","timestamp":"{timestamp}"},"artifacts":[{"artifactId":"a-1","parts":[{"text":"Hello"}]}]},"id":10,"jsonrpc":"2.0"}
+```
+
+The SSE `data` lines use `json.dumps(..., ensure_ascii=False)` spacing because the SDK's `event_generator` serializes every SSE item, while `application/json` bodies use Starlette's compact form. Both forms are recorded as observed and are not normalized by the Backend. The suite runs in the CI_Pipeline step 4 on every runner, so a failing assertion fails the run (1.21).
 - **`accepts_version(h)`** is true iff `h.strip()` parses as a `packaging.version.Version` whose release is `(1, 0)` or `(1, 0, 0…)`. So `1.0` and `1.0.0` are accepted, and `1.1`, `1.0.1`, `2.0`, `0.3`, and `abc` are rejected. A2A versions are `major.minor`, so a trailing `.0` is read as the same version. A missing header never reaches this function (1.13).
 - **ProtoJSON (1.10).** Every response and stream event is serialized by the SDK through `MessageToDict`, whose default renders enums by name. The Backend never builds A2A JSON by hand except the contract error bodies, whose `state` is `TaskState.Name(...)`. `test_protojson_contract` asserts on raw response and SSE bytes for: Task (all six states), Status_Event, Token_Event, get-task, cancel, and both contract errors on both bindings. It checks for `TASK_STATE_*` and `ROLE_AGENT`/`ROLE_USER`, and for no lower-case or integer enum forms.
-- **First event of a stream (3.1, 3.10–3.13).** See `execute()`. In summary: a new Task gets `Task{state: TASK_STATE_SUBMITTED}` first; an admitted continuation with a recognized decision gets `Task{state: TASK_STATE_WORKING}` (the transition was committed before the enqueue), then the `working` Status_Event; an unrecognized reply gets `Task{state: TASK_STATE_INPUT_REQUIRED}`, then exactly one `input-required` Status_Event with the re-prompt, marked final.
+- **First event of a stream (3.1, 3.10–3.13).** See `execute()`. These rules apply to admitted requests only; a rejected request's stream holds the single error event of 1.16 and nothing else. In summary: a new Task gets `Task{state: TASK_STATE_SUBMITTED}` first; an admitted continuation with a recognized decision gets `Task{state: TASK_STATE_WORKING}` (the transition was committed before the enqueue), then the `working` Status_Event; an unrecognized reply gets `Task{state: TASK_STATE_INPUT_REQUIRED}`, then exactly one `input-required` Status_Event with the re-prompt, marked final.
 
 ### 4. Orchestrator (`orchestrator/`)
 
@@ -2415,7 +2536,7 @@ The properties below cover persistent storage (Requirement 18) and the A2A inter
 
 ### Property 59: First stream event is a Task_Snapshot
 
-*For any* scenario script, every `SendStreamingMessage` stream SHALL begin with the following first event:
+*For any* scenario script, every **admitted** `SendStreamingMessage` stream SHALL begin with the following first event (rejected requests are covered by Property 62):
 - A new Task: a `Task` with `TASK_STATE_SUBMITTED`.
 - A continuation with a recognizable decision: a `Task` with `TASK_STATE_WORKING`, followed by a `working` Status_Event.
 - A continuation without one: a `Task` with `TASK_STATE_INPUT_REQUIRED`, followed by exactly one `input-required` Status_Event marked final and no other event.
@@ -2435,6 +2556,16 @@ In every case the snapshot carries the Task's `task_id`, `context_id`, and accum
 *For any* set of configured secrets and any scenario script whose tool exceptions, LLM rejection reasons, and status messages embed those secrets, every TEXT value in the Storage_Database SHALL contain no substring of length ≥ 4 of any secret. The only exceptions are user and assistant message content, and tool messages converted from MCP content items, which may legitimately carry such text. Status messages, failure messages, exception-derived Tool_Results, and every part of `a2a_snapshot` other than user-message text are always checked.
 
 **Validates: Requirements 16.10, 16.11**
+
+### Property 62: Streaming outcome framing
+
+*For any* sequence of `SendStreamingMessage` and `SubscribeToTask` requests over seeded stores (random `context_id`, `task_id`, and JSON-RPC `id` values, Tasks in all six Task_States, unknown `task_id`s, busy Contexts, and an optional injected creation-commit failure), each request's response SHALL be HTTP 200 with an SSE body in exactly one of these shapes:
+- **Rejected after dispatch:** exactly one event, an `error` event whose `data` is a JSON-RPC error response echoing the request `id`, with no `result` event before or after it. For a busy Context the error is exactly `{"code": -32050, "message": "Context is busy", "data": {"context_id": c, "active_task_id": t}}`. For a `submitted`/`working` Task it is exactly `{"code": -32602, "message": "Task is not awaiting input", "data": {"task_id": t, "state": s}}`. The Session_Store and Task_Store record no write.
+- **Admitted:** the first event is a `result` event carrying a `Task` (a Task_Snapshot) for the request's Task.
+
+*For any* admitted stream and any failure injected after event k ≥ 1 that is not a `failed` Task transition, the stream SHALL contain exactly k `result` events followed by exactly one `error` event and then end. *For any* scenario that ends in a `failed` transition, the stream SHALL end with the final `TASK_STATE_FAILED` status event and contain no `error` event.
+
+**Validates: Requirements 1.16, 1.17, 3.10**
 
 ## Error Handling
 
@@ -2489,7 +2620,12 @@ In every case the snapshot carries the Task's `task_id`, `context_id`, and accum
 | SDK saves a state the Backend never committed | `ProjectedTaskStore.save` | Not applied; `task_store_divergent_save` warning; tests fail on it | unchanged | 18.9 |
 | Message to a Context with an Active_Task | `HostRequestHandler._admit` | `-32050` "Context is busy" + `{context_id, active_task_id}` / REST 409 | none created | 1.14, 11.7 |
 | Continuation for a `submitted`/`working` Task | `HostRequestHandler._admit` | `-32602` "Task is not awaiting input" + `{task_id, state}` / REST 400 | unchanged | 1.15, 2.14 |
-| `A2A-Version` other than 1.0 | `HostRequestHandler._check_version` (and SDK for other majors) | `VersionNotSupportedError` `-32009` | none created | 1.12 |
+| `A2A-Version` other than 1.0 | JSON-RPC: SDK `validate_version` + `HostJsonRpcDispatcher._check_version_strict`, before dispatch; REST: `HostRequestHandler._check_version` | `VersionNotSupportedError` `-32009`; JSON-RPC body is `application/json` on every method | none created | 1.12, 1.18 |
+| Any post-dispatch rejection or failure on `SendStreamingMessage`/`SubscribeToTask` before the first event (admission errors, unknown Task, terminal Task, creation commit failure) | `HostJsonRpcDispatcher._sse_events` | HTTP 200 `text/event-stream`; one `event: error` SSE event with the JSON-RPC error response; stream closed | none created / unchanged | 1.16 |
+| Stream failure after one or more events, not a `failed` transition | `HostJsonRpcDispatcher._sse_events` | One trailing `event: error` event (`-32603` "Internal error" for non-A2A exceptions; exception logged, not sent); stream closed; runner left running | unchanged by the dispatcher | 1.17 |
+| Error after a final event (for example a producer exception after `failed`) | `HostJsonRpcDispatcher._sse_events` | Not sent: reading stops at the final event; logged at warning | already final | 1.17, 2.6 |
+| Pre-dispatch JSON-RPC error (`-32700`, `-32600`, `-32601`, schema `-32602`, `-32009`) | SDK `handle_requests` / `validate_version` | `application/json` body, HTTP 200, SDK form | none created | 1.9, 1.18 |
+| `GetTask` / `CancelTask` error | SDK non-streaming path | `application/json` JSON-RPC error body | unchanged | 1.19 |
 
 Cross-cutting rules:
 
@@ -2568,6 +2704,7 @@ Unit tests stay focused on concrete examples and error paths. Broad input covera
 | 57 | `a2a_server/errors.py`, `a2a_server/dispatch.py`, `HostRequestHandler` | `httpx.ASGITransport` app with seeded stores |
 | 58 | `a2a_server/errors.py` `accepts_version`, `HostRequestHandler` | ASGI app, recording store |
 | 59 | `a2a_server/executor.py` + SDK `DefaultRequestHandler` | ASGI app, scenario fakes, SSE parser |
+| 62 | `a2a_server/dispatch.py` `HostJsonRpcDispatcher._sse_events`, `jsonrpc_error_response`, `HostRequestHandler._admit` | ASGI app with seeded stores, recording store, `FaultInjectingConnection` for the creation failure, a fault-injecting executor hook that raises after event k, SSE parser |
 | 60 | event/snapshot builders + SDK serializer | — |
 | 61 | scenario harness on `SQLiteSessionStore` | secrets strategy, full-table text dump |
 
@@ -2720,17 +2857,19 @@ A final `equivalence` job (`needs: test`) downloads the five digests and fails i
   - `test_version_header` covers `1.0` accepted, `1.1`/`2.0`/`abc` rejected with `-32009` and no Task, and a **missing** header asserted against the recorded SDK behaviour (1.11–1.13). The observed result is written into the test as the expected value, so an SDK upgrade that changes it fails loudly.
   - `test_first_event_snapshot` covers new Task, recognized continuation, and unrecognized continuation (3.10–3.13).
   - `test_no_divergent_saves` fails if any `task_store_divergent_save` record appears during the A2A suite (18.9 canary).
-  - `test_storage_failure_on_create` makes the creation commit fail: error response, no Task (18.30).
+  - `test_storage_failure_on_create` makes the creation commit fail: error response, no Task (18.30). On `SendStreamingMessage` the response is the single SSE error event of 1.16.
+  - On the streaming methods, `test_error_contract_jsonrpc` now expects the SSE error form of 1.16, not a JSON body.
+- **Wire contract** (`test_wire_contract.py`, real uvicorn socket, golden bytes in `tests/integration/wire_golden/`): every case of the table in "Wire contract test (1.21)". It covers raw status, raw `Content-Type`, and raw body bytes for the single-event SSE errors (1.16), trailing errors after events and the no-error `failed` stream (1.17), each pre-dispatch code (1.18), `GetTask`/`CancelTask` errors (1.19), and the unwrapped `GetTask` result (1.20). It runs in CI step 4 on all five runners (1.21). When the pinned `a2a-sdk` is upgraded, the golden files are regenerated only by a deliberate `pytest --update-wire-golden` run, and the diff is reviewed as an interface change.
 - **Restart without a crash** (`test_restart.py`): Graceful_Shutdown, then restart. Completed and canceled Tasks are served by get-task with artifacts (3.6, 18.7). A Context's history resumes (18.6). Retention at startup deletes a Context whose Last_Activity was set in the past, and leaves a Context with an Active_Task in place (11.11, 11.12).
 - **Event loop health with storage** (`test_concurrency.py` extension): 10 concurrent Tasks with streaming tokens on the SQLite backend under asyncio debug with `slow_callback_duration=0.1`. No slow-callback warnings are allowed, and the first status of a new Task still arrives within 500 ms (14.1, 14.2, 18.14).
 - **Function-calling fallback** (`test_llm_fallback.py`, marked `@pytest.mark.llm`, opt-in against a local Ollama): prompt-based tool calls come back in the assembled format (10.8).
 
 ### Why some criteria are not property tests
 
-The A2A wire protocol, SDK error mapping, uvicorn binding, subprocess lifecycle, and LiteLLM/Ollama behavior are external systems. Their behavior does not vary meaningfully with generated input, and running them 100 times adds cost without finding more bugs. They are covered by 1–3 example integration tests each. Requirement 11.10 (replaceable storage) is structural and is enforced by the Orchestrator depending only on the `SessionStore` ABC, checked by `mypy --strict`. For Requirement 17, real process trees, console control events, socket conflicts, loop types, and wheel installation depend on the OS rather than on generated input. They are covered by the platform-specific integration tests and the CI matrix, while every decision those mechanisms rely on is a pure function covered by P33–P48. For Requirement 18, the following are OS-level behaviours and do not vary with generated input: file modes and ACLs (16.8, 17.36, 17.37), OS lock release on process death (18.25–18.27), WAL pragmas (18.13), and real kill recovery. They get example and integration tests. The storage logic itself is property-tested: encoding (P49), transactions under kill and failure injection (P50–P52), recovery planning (P53), schema classification and migration (P54, P55), retention selection (P21), and the default directory (P56).
+The A2A wire protocol, SDK error mapping, the SDK's pre-dispatch error forms (1.18), the `GetTask`/`CancelTask` wire shapes (1.19, 1.20), uvicorn binding, subprocess lifecycle, and LiteLLM/Ollama behavior are external systems. Their behavior does not vary meaningfully with generated input, and running them 100 times adds cost without finding more bugs. They are covered by 1–3 example integration tests each. Requirement 11.10 (replaceable storage) is structural and is enforced by the Orchestrator depending only on the `SessionStore` ABC, checked by `mypy --strict`. For Requirement 17, real process trees, console control events, socket conflicts, loop types, and wheel installation depend on the OS rather than on generated input. They are covered by the platform-specific integration tests and the CI matrix, while every decision those mechanisms rely on is a pure function covered by P33–P48. For Requirement 18, the following are OS-level behaviours and do not vary with generated input: file modes and ACLs (16.8, 17.36, 17.37), OS lock release on process death (18.25–18.27), WAL pragmas (18.13), and real kill recovery. They get example and integration tests. The storage logic itself is property-tested: encoding (P49), transactions under kill and failure injection (P50–P52), recovery planning (P53), schema classification and migration (P54, P55), retention selection (P21), and the default directory (P56).
 
 ### Tooling
 
 - `pytest -q` runs unit and property tests. `pytest -m integration` runs integration tests. `pytest -m llm` runs opt-in tests against a real local model.
 - `ruff check` and `ruff format --check`, plus `mypy --strict src/`, run in CI.
-- Dependencies are pinned in `uv.lock`, with `required-environments` set for the five platforms so locking fails on a missing wheel (17.33). At implementation time, check the pinned `a2a-sdk` (1.2.x) and `mcp` (2.3.x) versions against the names used in `a2a_compat.py`, `McpSessionAdapter`, and the framing imports in `stdio_transport.py`. Also check the pinned `uvicorn` (≥ 0.36) against the `capture_signals` override. For the pinned `a2a-sdk`, re-check these private or behavioural points: `JsonRpcDispatcher._generate_error_response` and `_create_response`; `A2A_ERROR_MAPPING`/`A2A_ERROR_REASONS`; `validate_version` on missing headers; the `ActiveTask` save-before-forward order; and the "Task already exists" handling of continuation snapshots. The SDK internals in this design were read from the repository's `main` branch alongside the 1.2.3 release on PyPI and may differ in detail from the tagged release. The contract tests above are the authority. Note that `mcp` 2.x depends on `httpx2` for its HTTP transports, while the test suite uses `httpx` for A2A client calls; both can coexist.
+- Dependencies are pinned in `uv.lock`, with `required-environments` set for the five platforms so locking fails on a missing wheel (17.33). At implementation time, check the pinned `a2a-sdk` (1.2.x) and `mcp` (2.3.x) versions against the names used in `a2a_compat.py`, `McpSessionAdapter`, and the framing imports in `stdio_transport.py`. Also check the pinned `uvicorn` (≥ 0.36) against the `capture_signals` override. For the pinned `a2a-sdk`, re-check these private or behavioural points: `JsonRpcDispatcher._process_streaming_request` (signature, the `validate_version` decorator, and the eager `anext`) and `_create_response` (the `event: error` framing and `json_utils.dumps`); `A2A_ERROR_MAPPING`/`A2A_ERROR_REASONS`; `validate_version` on missing headers; the `ActiveTask` save-before-forward order; and the "Task already exists" handling of continuation snapshots. The SDK internals in this design were read from the repository's `main` branch alongside the 1.2.3 release on PyPI and may differ in detail from the tagged release. The contract tests above are the authority. Note that `mcp` 2.x depends on `httpx2` for its HTTP transports, while the test suite uses `httpx` for A2A client calls; both can coexist.

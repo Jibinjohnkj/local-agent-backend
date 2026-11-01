@@ -13,6 +13,7 @@ from a2a.server.events import EventQueue
 from a2a.server.jsonrpc_models import JSONRPCError
 from a2a.server.request_handlers import DefaultRequestHandler, DefaultRequestHandlerV2
 from a2a.server.routes.jsonrpc_dispatcher import JsonRpcDispatcher
+from a2a.server.request_handlers.response_helpers import build_error_response
 from a2a.server.tasks import TaskStore
 from a2a.types import TaskState
 from a2a.utils.errors import (
@@ -24,9 +25,12 @@ from a2a.utils.errors import (
     InvalidParamsError,
     TaskNotCancelableError,
     TaskNotFoundError,
+    UnsupportedOperationError,
     VersionNotSupportedError,
 )
-from a2a.utils.proto_utils import validate_proto_required_fields
+from a2a.utils.constants import PROTOCOL_VERSION_1_0
+from a2a.utils.proto_utils import to_stream_response, validate_proto_required_fields
+from a2a.utils.version_validator import validate_version
 
 __all__ = [
     "A2A_ERROR_MAPPING",
@@ -37,6 +41,7 @@ __all__ = [
     "DefaultRequestHandlerV2",
     "ErrorMapping",
     "EventQueue",
+    "PROTOCOL_VERSION_1_0",
     "InternalError",
     "InvalidParamsError",
     "JSONRPCError",
@@ -47,6 +52,10 @@ __all__ = [
     "TaskNotFoundError",
     "TaskState",
     "TaskStore",
+    "UnsupportedOperationError",
     "VersionNotSupportedError",
+    "build_error_response",
+    "to_stream_response",
+    "validate_version",
     "validate_proto_required_fields",
 ]

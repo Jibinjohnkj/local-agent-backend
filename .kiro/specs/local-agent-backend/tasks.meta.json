@@ -2933,6 +2933,44 @@
         "chatSessionId": "sess_5f4d11ff-3a8d-443e-a61b-c5d2995d48f4",
         "timestamp": 1793509228728
       }
+    ],
+    "25.1 Rework HostJsonRpcDispatcher streaming error delivery": [
+      {
+        "executionId": "5ba6a0b0-cb92-4379-9ef0-25a387214b73",
+        "chatSessionId": "sess_66f575f0-ccb3-4500-a3b2-388e23bcb448",
+        "timestamp": 1793513412350
+      },
+      {
+        "executionId": "5ba6a0b0-cb92-4379-9ef0-25a387214b73",
+        "chatSessionId": "sess_66f575f0-ccb3-4500-a3b2-388e23bcb448",
+        "timestamp": 1793513428979
+      }
+    ],
+    "25.3 Verify GetTask and CancelTask response shapes": [
+      {
+        "executionId": "5ba6a0b0-cb92-4379-9ef0-25a387214b73",
+        "chatSessionId": "sess_66f575f0-ccb3-4500-a3b2-388e23bcb448",
+        "timestamp": 1793513413581
+      },
+      {
+        "executionId": "5ba6a0b0-cb92-4379-9ef0-25a387214b73",
+        "chatSessionId": "sess_66f575f0-ccb3-4500-a3b2-388e23bcb448",
+        "timestamp": 1793513429785
+      }
+    ],
+    "25.5 Write the wire contract test": [
+      {
+        "executionId": "5ba6a0b0-cb92-4379-9ef0-25a387214b73",
+        "chatSessionId": "sess_66f575f0-ccb3-4500-a3b2-388e23bcb448",
+        "timestamp": 1793513413696
+      }
+    ],
+    "26. Checkpoint - Ensure all tests pass": [
+      {
+        "executionId": "5ba6a0b0-cb92-4379-9ef0-25a387214b73",
+        "chatSessionId": "sess_66f575f0-ccb3-4500-a3b2-388e23bcb448",
+        "timestamp": 1793513413805
+      }
     ]
   }
 }
