@@ -1,0 +1,52 @@
+# Annotated example Backend_Config. Copy to config.yaml and adjust.
+# Use another file with the AGENT_CONFIG environment variable.
+#
+# - `${VAR}` in any string value is replaced with an environment variable. Keep secrets there.
+# - Path fields (`cwd`, `storage.path`) accept `~` (HOME on macOS/Linux, USERPROFILE on Windows)
+#   and forward slashes on every OS. Relative paths resolve against the folder holding this file.
+
+server:
+  # Binding to a wildcard address (0.0.0.0 or ::) or any non-loopback address requires
+  # `bearer_token` (at least 32 characters). The Agent_Card advertises the literal bind host,
+  # so for a wildcard bind remote clients need a hostname they can actually reach
+  # (for example the machine's DNS name) and must not use "0.0.0.0" or "::" as the target.
+  host: 127.0.0.1
+  port: 10000
+  # bearer_token: ${AGENT_BEARER_TOKEN}
+  cors_allowed_origins: ["http://localhost:5173"]
+
+llm:
+  model: ollama_chat/llama3.1
+  api_base: http://localhost:11434
+  # For a model without native tool support (for example gemma3), use the `ollama/` prefix
+  # (`model: ollama/gemma3n`) together with `native_function_calling: false`. LiteLLM sends
+  # tools natively on `ollama_chat/`, so Ollama rejects the request with "does not support
+  # tools", and the Task fails with that message.
+  # native_function_calling: false
+
+orchestration:
+  approval_timeout_s: 600
+  # session_idle_timeout_s: 86400   # delete Contexts idle this long (60..604800). Unset keeps them forever.
+
+mcp_servers:
+  - name: fs
+    transport: stdio
+    command: npx
+    args: ["-y", "@modelcontextprotocol/server-filesystem", "C:/Users/me/notes"]   # npx → npx.cmd on Windows via PATHEXT
+    cwd: ~/mcp                                                                       # Path_Field, ~ → USERPROFILE / HOME
+    env: { NODE_OPTIONS: "--max-old-space-size=512" }                                # replaces any inherited NODE_OPTIONS (case-insensitive on Windows)
+  - name: pg
+    transport: sse
+    url: http://localhost:8931/sse
+    headers: { Authorization: "Bearer ${PG_MCP_TOKEN}" }
+
+# Tools matching these patterns (`*` any run of characters, `?` one character) pause for approval.
+permissions:
+  fs: ["write_*", "delete_*", "move_file"]
+
+# Contexts, Message_History, and Tasks are stored in a SQLite database inside the Storage_Directory.
+# The Storage_Directory must be on a local disk. Network file systems (SMB/CIFS shares, NFS, and
+# similar) are not supported: SQLite WAL mode and the single-Backend lock are unreliable there.
+storage:
+  backend: sqlite            # default; "memory" keeps nothing on disk
+  # path: ~/agent-data       # Path_Field; default per OS (17.35)

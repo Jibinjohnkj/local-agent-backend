@@ -1,0 +1,124 @@
+[project]
+name = "local-agent-backend"
+version = "0.1.0"
+description = "Local Host Agent: A2A server that reasons with a local LLM (LiteLLM) and runs tools through MCP servers."
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.14"
+
+# Runtime dependencies (requirements.md, Appendix B; design.md "Dependencies and repository files").
+# Floors are the first releases with CPython 3.14 wheels. Exact versions live in uv.lock.
+dependencies = [
+    # `http-server` extra only. The `sqlite`/`sql` extras are not used, so SQLAlchemy, greenlet
+    # and aiosqlite stay out of the lock. Storage uses the standard-library sqlite3 module.
+    "a2a-sdk[http-server]>=1.2,<1.3",
+    "mcp>=2.3,<2.4",
+    # litellm is pinned to the newest release that ships a pure-Python (py3-none-any) wheel.
+    # Every compiled litellm wheel since 1.94.0rc3 (win_amd64 included, up to 1.106.6) bundles
+    # CRLF-mangled tiktoken cache files, so `import litellm` needs the network on Windows
+    # (BerriAI/litellm#41855, unfixed). The 1.91.5 wheel keeps the files byte-exact (LF, sha256 matches
+    # tiktoken's pins) and is the same file on all five Supported_Platforms.
+    # Re-evaluate once #41855 is fixed upstream; the Windows CI job imports litellm offline to guard this.
+    "litellm==1.91.5",
+    "starlette",
+    "uvicorn[standard]>=0.36",
+    # Selected through loop_factory on macOS/Linux (17.29). No Windows build exists.
+    "uvloop>=0.22; sys_platform != 'win32'",
+    "sse-starlette",
+    "httpx",
+    "pydantic>=2.12",
+    "pydantic-settings",
+    "pyyaml>=6.0.3",
+    "jsonschema",
+    "structlog",
+    "anyio",
+    # Used by accepts_version (A2A-Version header matching).
+    "packaging",
+]
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "hypothesis",
+    "respx",
+    "ruff",
+    "mypy",
+    "types-jsonschema",
+    "types-pyyaml",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/local_agent"]
+
+[tool.uv]
+# `uv lock` fails if any package lacks a compatible wheel for one of these environments (17.1, 17.33).
+# Windows x86_64, macOS arm64, macOS x86_64, Linux x86_64 and Linux aarch64.
+# glibc >= 2.28 is checked by the manylinux_2_28 wheel tags; musllinux is not a Supported_Platform.
+required-environments = [
+    "sys_platform == 'win32' and platform_machine == 'AMD64'",
+    "sys_platform == 'darwin' and platform_machine == 'arm64'",
+    "sys_platform == 'darwin' and platform_machine == 'x86_64'",
+    "sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "sys_platform == 'linux' and platform_machine == 'aarch64'",
+]
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+# The scenario harness (`scenarios`, `strategies`) lives in tests/property; unit tests import it too.
+pythonpath = ["tests/property"]
+addopts = "-ra --strict-markers --strict-config"
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+markers = [
+    "integration: starts real subprocesses or sockets (MCP test servers, a Backend process)",
+    "llm: needs a real local LLM endpoint; skipped in CI",
+    "manual: needs a human, for example closing a console window; skipped in CI",
+]
+filterwarnings = [
+    "error::DeprecationWarning:asyncio",
+    "error::DeprecationWarning:local_agent",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "UP",  # pyupgrade
+    "SIM", # flake8-simplify
+    "C4",  # flake8-comprehensions
+    "PT",  # flake8-pytest-style
+    "ASYNC", # flake8-async
+    "RUF", # ruff-specific rules
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["local_agent"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["B011"]
+
+[tool.mypy]
+python_version = "3.14"
+strict = true
+files = ["src"]
+mypy_path = "src"
+plugins = ["pydantic.mypy"]
+warn_unreachable = true
+
+[[tool.mypy.overrides]]
+module = ["litellm", "litellm.*", "google.protobuf", "google.protobuf.*"]
+ignore_missing_imports = true

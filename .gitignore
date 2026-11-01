@@ -30,6 +30,9 @@ coverage.xml
 .pyre/
 .pytype/
 
+# Files the test run writes for CI to upload (transcript digests)
+artifacts/
+
 # Local configuration and secrets (config.example.yaml stays tracked)
 config.yaml
 .env

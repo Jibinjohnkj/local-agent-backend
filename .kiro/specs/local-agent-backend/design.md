@@ -265,17 +265,19 @@ Module paths follow Appendix A. Signatures are illustrative Python; `...` marks 
 
 ```python
 class ConfigIssue(NamedTuple):
-    path: str          # dotted path, e.g. "mcp_servers.1.command"
-    message: str       # never contains substituted env values
+    path: str  # dotted path, e.g. "mcp_servers.1.command"
+    message: str  # never contains substituted env values
+
 
 class ConfigError(Exception):
     issues: list[ConfigIssue]
 
+
 def resolve_config_path(env: Mapping[str, str], cwd: Path) -> Path: ...
-def substitute_env(raw: Any, env: Mapping[str, str], path: str = "") -> Any: ...   # pure
+def substitute_env(raw: Any, env: Mapping[str, str], path: str = "") -> Any: ...  # pure
 def load_config(path: Path, env: Mapping[str, str]) -> BackendConfig: ...
 def load_config_from_text(text: str, env: Mapping[str, str], source: str) -> BackendConfig: ...
-def dump_config(cfg: BackendConfig) -> str: ...   # YAML, secrets revealed, "${" escaped
+def dump_config(cfg: BackendConfig) -> str: ...  # YAML, secrets revealed, "${" escaped
 ```
 
 - `resolve_config_path`: `AGENT_CONFIG` when set and non-empty, otherwise `cwd / "config.yaml"`. There is no fallback (13.6). Read through `pydantic-settings` (`LauncherSettings.agent_config: str | None`). The `AGENT_CONFIG` value is a Path_Field resolved against the process working directory by `oscompat.paths.resolve_path_field` (13.1, 17.16–17.18).
@@ -294,7 +296,8 @@ def dump_config(cfg: BackendConfig) -> str: ...   # YAML, secrets revealed, "${"
 ```python
 class Redactor:
     def __init__(self, secrets: Iterable[str], placeholder: str = "[REDACTED]"): ...
-    def redact(self, text: str) -> str: ...          # pure
+    def redact(self, text: str) -> str: ...  # pure
+
 
 def configure_logging(cfg: LoggingConfig, redactor: Redactor) -> None: ...
 def get_logger(component: str) -> structlog.BoundLogger: ...
@@ -322,22 +325,33 @@ The card has `capabilities.streaming=True`, `default_input_modes=["text/plain"]`
 
 ```python
 def build_app(cfg: BackendConfig, deps: Deps) -> Starlette:
-    install_error_mappings()                             # REST: ContextBusyError → 409, TaskNotAwaitingInputError → 400
-    handler = HostRequestHandler(HostAgentExecutor(deps), task_store=deps.task_store, agent_card=card)
-    jsonrpc = HostJsonRpcDispatcher(handler)             # renders HostContractError exactly (1.14, 1.15)
+    install_error_mappings()  # REST: ContextBusyError → 409, TaskNotAwaitingInputError → 400
+    handler = HostRequestHandler(
+        HostAgentExecutor(deps), task_store=deps.task_store, agent_card=card
+    )
+    jsonrpc = HostJsonRpcDispatcher(handler)  # renders HostContractError exactly (1.14, 1.15)
     routes = [
-        *create_agent_card_routes(card),                 # /.well-known/agent-card.json
-        Route("/", jsonrpc.handle_requests, methods=["POST"]),   # JSON-RPC + SSE; replaces create_jsonrpc_routes
-        *create_rest_routes(handler),                    # REST binding
+        *create_agent_card_routes(card),  # /.well-known/agent-card.json
+        Route(
+            "/", jsonrpc.handle_requests, methods=["POST"]
+        ),  # JSON-RPC + SSE; replaces create_jsonrpc_routes
+        *create_rest_routes(handler),  # REST binding
         Route("/health", health_endpoint, methods=["GET"]),
     ]
     middleware = [
         Middleware(LoopbackGuardMiddleware, enabled=is_loopback(cfg.server.host)),
-        Middleware(CORSMiddleware, allow_origins=cfg.server.cors_allowed_origins,
-                   allow_methods=["GET", "POST", "OPTIONS"], allow_headers=["*"]),
-        Middleware(BearerAuthMiddleware, token=cfg.server.bearer_token,
-                   enabled=not is_loopback(cfg.server.host),
-                   exempt_paths={AGENT_CARD_WELL_KNOWN_PATH}),
+        Middleware(
+            CORSMiddleware,
+            allow_origins=cfg.server.cors_allowed_origins,
+            allow_methods=["GET", "POST", "OPTIONS"],
+            allow_headers=["*"],
+        ),
+        Middleware(
+            BearerAuthMiddleware,
+            token=cfg.server.bearer_token,
+            enabled=not is_loopback(cfg.server.host),
+            exempt_paths={AGENT_CARD_WELL_KNOWN_PATH},
+        ),
     ]
     return Starlette(routes=routes, middleware=middleware, lifespan=lifespan(deps))
 ```
@@ -355,6 +369,8 @@ def build_app(cfg: BackendConfig, deps: Deps) -> Starlette:
 
 ```python
 def health_payload(servers: Sequence[ServerStatus]) -> dict: ...  # pure
+
+
 # {"status": "ok"|"degraded", "mcp_servers": [{"name": "fs", "status": "available"}]}
 ```
 
@@ -363,17 +379,28 @@ The payload reads only in-memory `McpManager` state and never contacts the LLM o
 #### `executor.py`
 
 ```python
-class HostRequestHandler(DefaultRequestHandler):            # DefaultRequestHandlerV2 in 1.2.x
+class HostRequestHandler(DefaultRequestHandler):  # DefaultRequestHandlerV2 in 1.2.x
     """Adds version and admission checks before delegating to the SDK."""
+
     async def on_message_send(self, params, context):
-        self._check_version(context); reservation = await self._admit(params, context)
-        with reservation: return await super().on_message_send(params, context)
-    async def on_message_send_stream(self, params, context):
-        self._check_version(context); reservation = await self._admit(params, context)
+        self._check_version(context)
+        reservation = await self._admit(params, context)
         with reservation:
-            async for e in super().on_message_send_stream(params, context): yield e
-    async def on_cancel_task(self, params, context): ...     # guards the SDK's direct-write path (below)
+            return await super().on_message_send(params, context)
+
+    async def on_message_send_stream(self, params, context):
+        self._check_version(context)
+        reservation = await self._admit(params, context)
+        with reservation:
+            async for e in super().on_message_send_stream(params, context):
+                yield e
+
+    async def on_cancel_task(
+        self, params, context
+    ): ...  # guards the SDK's direct-write path (below)
+
     # on_get_task / on_list_tasks / on_subscribe_to_task: _check_version, then super()
+
 
 class HostAgentExecutor(AgentExecutor):
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None: ...
@@ -399,28 +426,46 @@ A `submitted` Task counts as busy. A Task is `submitted` only between its creati
 
 ```python
 async def execute(self, context, event_queue):
-    rec = await self.sessions.get_task(context.task_id)        # own lookup; the v2 builder passes task=None
-    if rec is None:                                             # new Task
-        ctx_id = context.context_id                             # SDK-generated (UUID4) if the client sent none
-        runner = self.runners.create(context.task_id, ctx_id, context.message)   # claims the reservation
+    rec = await self.sessions.get_task(
+        context.task_id
+    )  # own lookup; the v2 builder passes task=None
+    if rec is None:  # new Task
+        ctx_id = context.context_id  # SDK-generated (UUID4) if the client sent none
+        runner = self.runners.create(
+            context.task_id, ctx_id, context.message
+        )  # claims the reservation
         runner.attach(event_queue)
         created = self.task_store.expect_creation(context.task_id)
-        await event_queue.enqueue_event(snapshot(context.task_id, ctx_id, SUBMITTED))  # first event (3.10, 3.11)
-        await asyncio.wait_for(created, 5)                      # resolved by ProjectedTaskStore.save() after the create txn
-        runner.start()                                          # never started if creation failed (18.30)
-    else:                                                       # continuation of an input-required Task
+        await event_queue.enqueue_event(
+            snapshot(context.task_id, ctx_id, SUBMITTED)
+        )  # first event (3.10, 3.11)
+        await asyncio.wait_for(
+            created, 5
+        )  # resolved by ProjectedTaskStore.save() after the create txn
+        runner.start()  # never started if creation failed (18.30)
+    else:  # continuation of an input-required Task
         runner = self.runners.get(rec.task_id)
-        decision = parse_approval_decision(context.message, self.cfg.orchestration.approval_keywords)
+        decision = parse_approval_decision(
+            context.message, self.cfg.orchestration.approval_keywords
+        )
         runner.attach(event_queue)
-        if decision is None:                                    # 5.11, 3.13
-            await event_queue.enqueue_event(await self.task_store.snapshot(rec.task_id))   # INPUT_REQUIRED
-            await runner.emitter.reprompt_approval()            # commit status message, then final input-required status
+        if decision is None:  # 5.11, 3.13
+            await event_queue.enqueue_event(
+                await self.task_store.snapshot(rec.task_id)
+            )  # INPUT_REQUIRED
+            await (
+                runner.emitter.reprompt_approval()
+            )  # commit status message, then final input-required status
             return
-        await runner.emitter.transition(WORKING, emit=False)    # commit input-required → working first (5.8)
-        await event_queue.enqueue_event(await self.task_store.snapshot(rec.task_id))       # WORKING (3.12)
-        await runner.emitter.emit_current_status()              # the working Status_Event of 5.8
+        await runner.emitter.transition(
+            WORKING, emit=False
+        )  # commit input-required → working first (5.8)
+        await event_queue.enqueue_event(
+            await self.task_store.snapshot(rec.task_id)
+        )  # WORKING (3.12)
+        await runner.emitter.emit_current_status()  # the working Status_Event of 5.8
         runner.approval_gate.resolve(decision)
-    await runner.wait_stream_closing()                          # completed/failed/canceled/input-required
+    await runner.wait_stream_closing()  # completed/failed/canceled/input-required
 ```
 
 - **First event (3.10–3.13).** The executor's first enqueue on every streaming request is a `Task` snapshot. Because message streams subscribe with `include_initial_task=False`, that snapshot is the first SSE event. For a new Task the SDK consumer saves it (the creation commit) before forwarding it. For a continuation the SDK forwards the stored Task, which `ProjectedTaskStore.get` builds from the committed row. Committing `working` before enqueuing guarantees the snapshot reads `TASK_STATE_WORKING` and never `TASK_STATE_INPUT_REQUIRED` (3.12). `transition(..., emit=False)` commits without enqueuing, and `emit_current_status()` then enqueues the committed state's Status_Event. Persist-before-emit is unchanged.
@@ -432,30 +477,53 @@ Task and Context IDs come from the SDK `RequestContext` (UUID4). The creation tr
 #### `events.py`: TaskEventEmitter
 
 ```python
-ALLOWED: frozenset[tuple[TaskState, TaskState]] = frozenset({
-    (SUBMITTED, WORKING), (WORKING, INPUT_REQUIRED), (INPUT_REQUIRED, WORKING),
-    (WORKING, COMPLETED), (WORKING, FAILED), (INPUT_REQUIRED, FAILED),
-    (WORKING, CANCELED), (INPUT_REQUIRED, CANCELED),
-})
+ALLOWED: frozenset[tuple[TaskState, TaskState]] = frozenset(
+    {
+        (SUBMITTED, WORKING),
+        (WORKING, INPUT_REQUIRED),
+        (INPUT_REQUIRED, WORKING),
+        (WORKING, COMPLETED),
+        (WORKING, FAILED),
+        (INPUT_REQUIRED, FAILED),
+        (WORKING, CANCELED),
+        (INPUT_REQUIRED, CANCELED),
+    }
+)
 
 RECOVERY_ONLY = frozenset({(SUBMITTED, FAILED)})
 
-def is_allowed(current: TaskState, new: TaskState, *, recovery: bool = False) -> bool: ...    # pure (2.9)
+
+def is_allowed(
+    current: TaskState, new: TaskState, *, recovery: bool = False
+) -> bool: ...  # pure (2.9)
+
 
 class TaskEventEmitter:
-    async def transition(self, new: TaskState, message: str | None = None,
-                         metadata: dict | None = None, *,
-                         with_txn: StorageTxn | None = None,          # appends/artifacts committed together
-                         emit: bool = True) -> bool: ...
-    async def status(self, message: str, metadata: dict | None = None) -> None: ...  # same-state update
-    async def emit_current_status(self) -> None: ...                  # enqueue the committed state, no commit
-    async def token(self, artifact_id: str, text: str, first: bool) -> None: ...      # buffer + enqueue, no commit
-    async def close_artifact(self, artifact_id: str) -> None: ...     # commit full text, then last-chunk event
-    def live_artifacts(self) -> list[ArtifactRecord]: ...             # read by ProjectedTaskStore.get (2.10)
+    async def transition(
+        self,
+        new: TaskState,
+        message: str | None = None,
+        metadata: dict | None = None,
+        *,
+        with_txn: StorageTxn | None = None,  # appends/artifacts committed together
+        emit: bool = True,
+    ) -> bool: ...
+    async def status(
+        self, message: str, metadata: dict | None = None
+    ) -> None: ...  # same-state update
+    async def emit_current_status(self) -> None: ...  # enqueue the committed state, no commit
+    async def token(
+        self, artifact_id: str, text: str, first: bool
+    ) -> None: ...  # buffer + enqueue, no commit
+    async def close_artifact(
+        self, artifact_id: str
+    ) -> None: ...  # commit full text, then last-chunk event
+    def live_artifacts(self) -> list[ArtifactRecord]: ...  # read by ProjectedTaskStore.get (2.10)
     async def tool_started(self, call: ResolvedCall) -> None: ...
     async def tool_completed(self, call: ResolvedCall | UnresolvedCall, ok: bool) -> None: ...
     async def approval_required(self, call: ResolvedCall) -> None: ...
-    sealed: bool                                                     # True after terminal
+
+    sealed: bool  # True after terminal
 ```
 
 Rules enforced inside the emitter:
@@ -488,28 +556,47 @@ The REST rows follow the SDK's REST error format (google.rpc `Status` with typed
 ```python
 class HostContractError(A2AError):
     jsonrpc_code: ClassVar[int]
-    def jsonrpc_error(self) -> dict: return {"code": self.jsonrpc_code, "message": self.message, "data": self.data}
+
+    def jsonrpc_error(self) -> dict:
+        return {"code": self.jsonrpc_code, "message": self.message, "data": self.data}
+
 
 class ContextBusyError(HostContractError):
-    jsonrpc_code = -32050                         # implementation-defined server error range, outside -32001…-32009
+    jsonrpc_code = -32050  # implementation-defined server error range, outside -32001…-32009
+
     def __init__(self, context_id: str, active_task_id: str):
-        super().__init__("Context is busy", {"context_id": context_id, "active_task_id": active_task_id})
+        super().__init__(
+            "Context is busy", {"context_id": context_id, "active_task_id": active_task_id}
+        )
+
 
 class TaskNotAwaitingInputError(HostContractError):
     jsonrpc_code = -32602
+
     def __init__(self, task_id: str, state: TaskState):
-        super().__init__("Task is not awaiting input", {"task_id": task_id, "state": TaskState.Name(state)})
+        super().__init__(
+            "Task is not awaiting input", {"task_id": task_id, "state": TaskState.Name(state)}
+        )
 
-def install_error_mappings() -> None:            # idempotent; REST only
+
+def install_error_mappings() -> None:  # idempotent; REST only
     A2A_ERROR_MAPPING[ContextBusyError] = ErrorMapping(409, "ABORTED", "CONTEXT_BUSY")
-    A2A_ERROR_MAPPING[TaskNotAwaitingInputError] = ErrorMapping(400, "INVALID_ARGUMENT", "INVALID_PARAMS")
-    A2A_ERROR_REASONS.update({ContextBusyError: "CONTEXT_BUSY", TaskNotAwaitingInputError: "INVALID_PARAMS"})
+    A2A_ERROR_MAPPING[TaskNotAwaitingInputError] = ErrorMapping(
+        400, "INVALID_ARGUMENT", "INVALID_PARAMS"
+    )
+    A2A_ERROR_REASONS.update(
+        {ContextBusyError: "CONTEXT_BUSY", TaskNotAwaitingInputError: "INVALID_PARAMS"}
+    )
 
-def accepts_version(header: str) -> bool: ...    # pure (1.11, 1.12)
+
+def accepts_version(header: str) -> bool: ...  # pure (1.11, 1.12)
+
 
 class HostJsonRpcDispatcher(JsonRpcDispatcher):
-    def _generate_error_response(self, request_id, error): ...   # HostContractError → exact body (streaming path)
-    def _create_response(self, call_context, handler_result): ... # non-streaming path, see below
+    def _generate_error_response(
+        self, request_id, error
+    ): ...  # HostContractError → exact body (streaming path)
+    def _create_response(self, call_context, handler_result): ...  # non-streaming path, see below
 ```
 
 - **Why a dispatcher subclass.** The SDK maps errors by exact type and wraps `data` in `ErrorInfo` details, so no handler-side exception can produce `data: {"context_id": …}` (research table). `_admit` stores the error in `context.state["host_contract_error"]` and raises it. It is an `A2AError`, so the SDK aborts the request through its normal error path with no Task created. The dispatcher then renders it:
@@ -527,45 +614,59 @@ class HostJsonRpcDispatcher(JsonRpcDispatcher):
 
 ```python
 class TaskRunner:
-    task_id: str; context_id: str
+    task_id: str
+    context_id: str
     emitter: TaskEventEmitter
     approval_gate: ApprovalGate
-    def start(self) -> None: ...                 # asyncio.create_task(self._run())
+
+    def start(self) -> None: ...  # asyncio.create_task(self._run())
     async def cancel(self) -> None: ...
     async def wait_stream_closing(self) -> None: ...
 
+
 async def _run(self):
     try:
-        await self.emitter.transition(WORKING, "Discovering local tools...")   # 2.4 + 4.1 (single event)
+        await self.emitter.transition(
+            WORKING, "Discovering local tools..."
+        )  # 2.4 + 4.1 (single event)
         if cfg.per_session_discovery and self.is_new_context:
-            await mcp.refresh_available()                                        # 6.12 / 6.13
-        await sessions.append(ctx, [user_message])                               # 11.3
+            await mcp.refresh_available()  # 6.12 / 6.13
+        await sessions.append(ctx, [user_message])  # 11.3
         await self._reasoning_loop()
     except asyncio.CancelledError:
         await self._finalize(CANCELED, "Task canceled")
         raise
-    except LlmUnreachable:   await self._finalize(FAILED, "The local LLM is unreachable ...")   # 10.7
-    except LlmRejected as e: await self._finalize(FAILED, f"The LLM endpoint rejected the request: {e.reason}")  # 10.9
-    except LlmInterrupted:   await self._finalize(FAILED, "The LLM response was interrupted ...")   # 3.8 / 10.10
-    except TurnTooLarge:     await self._finalize(FAILED, "This conversation turn exceeds the context window budget ...")  # 11.9
-    except StorageWriteFailed: await self._finalize(FAILED, "The conversation could not be saved")       # 18.30 / 18.31
-    except Exception as e:   await self._finalize(FAILED, safe_message(e))      # 2.6, redacted, no traceback
+    except LlmUnreachable:
+        await self._finalize(FAILED, "The local LLM is unreachable ...")  # 10.7
+    except LlmRejected as e:
+        await self._finalize(FAILED, f"The LLM endpoint rejected the request: {e.reason}")  # 10.9
+    except LlmInterrupted:
+        await self._finalize(FAILED, "The LLM response was interrupted ...")  # 3.8 / 10.10
+    except TurnTooLarge:
+        await self._finalize(
+            FAILED, "This conversation turn exceeds the context window budget ..."
+        )  # 11.9
+    except StorageWriteFailed:
+        await self._finalize(FAILED, "The conversation could not be saved")  # 18.30 / 18.31
+    except Exception as e:
+        await self._finalize(FAILED, safe_message(e))  # 2.6, redacted, no traceback
+
 
 async def _reasoning_loop(self):
     round_trips = 0
     while True:
         tools_enabled = round_trips < cfg.max_tool_iterations
-        request = await self._build_request(tools_enabled)           # PromptBuilder + Trimmer
-        response = await self._stream_response(request)              # Token_Events
-        if not tools_enabled:                                         # 8.8 / 8.12
+        request = await self._build_request(tools_enabled)  # PromptBuilder + Trimmer
+        response = await self._stream_response(request)  # Token_Events
+        if not tools_enabled:  # 8.8 / 8.12
             await self._append_assistant(response.text, tool_calls=[])
             return await self._complete()
-        if not response.tool_calls:                                   # 2.5
+        if not response.tool_calls:  # 2.5
             await self._append_assistant(response.text, tool_calls=[])
             return await self._complete()
-        await self._append_assistant(response.text, response.tool_calls)   # 8.10
-        results = await dispatcher.run_turn(response.tool_calls)           # ordered
-        await sessions.append(ctx, [r.as_message() for r in results])      # 8.4 / 8.5
+        await self._append_assistant(response.text, response.tool_calls)  # 8.10
+        results = await dispatcher.run_turn(response.tool_calls)  # ordered
+        await sessions.append(ctx, [r.as_message() for r in results])  # 8.4 / 8.5
         round_trips += 1
 ```
 
@@ -579,7 +680,9 @@ async def _reasoning_loop(self):
 
 ```python
 DEFAULT_BASE_INSTRUCTIONS: str
-def build_system_prompt(base: str | None, tools: Sequence[RegisteredTool]) -> str: ...   # pure
+
+
+def build_system_prompt(base: str | None, tools: Sequence[RegisteredTool]) -> str: ...  # pure
 ```
 
 Layout: base instructions (or the default when `None`/empty, 12.8), then exactly one `## Tool usage` section. The section holds the three fixed instructions (12.3) and then either `### <server_name>` groups with `- <llm_name>: <description or "(no description provided)">` lines (12.2, 12.9), or the sentence "No tools are currently available." (12.4). The prompt is rebuilt on every chat-completion request from the live registry snapshot (12.5). The Session_Store keeps one `system` slot per Context that is overwritten, never appended (12.6, 12.7).
@@ -587,10 +690,16 @@ Layout: base instructions (or the default when `None`/empty, 12.8), then exactly
 #### `context_window.py`
 
 ```python
-def split_turns(history: Sequence[ChatMessage]) -> list[list[ChatMessage]]: ...         # pure
-def trim_to_budget(system: ChatMessage, turns: list[list[ChatMessage]], budget: int,
-                   estimate: Callable[[Sequence[ChatMessage]], int]) -> list[ChatMessage]: ...  # pure; raises TurnTooLarge
-async def estimate_tokens(model: str, messages, tools) -> int: ...   # litellm.token_counter in asyncio.to_thread
+def split_turns(history: Sequence[ChatMessage]) -> list[list[ChatMessage]]: ...  # pure
+def trim_to_budget(
+    system: ChatMessage,
+    turns: list[list[ChatMessage]],
+    budget: int,
+    estimate: Callable[[Sequence[ChatMessage]], int],
+) -> list[ChatMessage]: ...  # pure; raises TurnTooLarge
+async def estimate_tokens(
+    model: str, messages, tools
+) -> int: ...  # litellm.token_counter in asyncio.to_thread
 ```
 
 `trim_to_budget` drops whole turns from the oldest side until `estimate(system + kept) <= budget`, always keeping the system prompt and the last turn. If those two alone exceed the budget it raises `TurnTooLarge` (11.8, 11.9). It returns a new list and never mutates stored history. Tool definitions count toward the estimate. When `litellm.token_counter` cannot tokenize the model, the estimator falls back to `ceil(chars / 4)`.
@@ -599,14 +708,28 @@ async def estimate_tokens(model: str, messages, tools) -> int: ...   # litellm.t
 
 ```python
 @dataclass(frozen=True)
-class Prepared:            # ready to send
-    call: ToolCall; server: str; tool: str; args: dict; protected: bool
-@dataclass(frozen=True)
-class Rejected:            # resolved without sending (4.6)
-    call: ToolCall; result_text: str; server: str | None; tool: str | None; outcome: Literal["error", "denied"]
+class Prepared:  # ready to send
+    call: ToolCall
+    server: str
+    tool: str
+    args: dict
+    protected: bool
 
-def prepare_call(call: ToolCall, registry: RegistrySnapshot, availability: Mapping[str, bool]) -> Prepared | Rejected: ...  # pure
-def start_status_message(tool: str, args: Mapping[str, Any]) -> str: ...    # pure (4.2)
+
+@dataclass(frozen=True)
+class Rejected:  # resolved without sending (4.6)
+    call: ToolCall
+    result_text: str
+    server: str | None
+    tool: str | None
+    outcome: Literal["error", "denied"]
+
+
+def prepare_call(
+    call: ToolCall, registry: RegistrySnapshot, availability: Mapping[str, bool]
+) -> Prepared | Rejected: ...  # pure
+def start_status_message(tool: str, args: Mapping[str, Any]) -> str: ...  # pure (4.2)
+
 
 class ToolDispatcher:
     async def run_turn(self, calls: Sequence[ToolCall]) -> list[ToolResult]: ...
@@ -630,18 +753,21 @@ async def run_turn(self, calls):
     prepared = [prepare_call(c, registry.snapshot(), mgr.availability()) for c in calls]
     for p in prepared:
         if isinstance(p, Rejected):
-            results[p.call.id] = p.as_result(); await emitter.tool_completed(p, ok=False)   # 4.6
+            results[p.call.id] = p.as_result()
+            await emitter.tool_completed(p, ok=False)  # 4.6
     plain = [p for p in prepared if isinstance(p, Prepared) and not p.protected]
-    outcomes = await asyncio.gather(*(self._execute(p) for p in plain))            # 8.3, no return_exceptions needed: _execute never raises except CancelledError
+    outcomes = await asyncio.gather(
+        *(self._execute(p) for p in plain)
+    )  # 8.3, no return_exceptions needed: _execute never raises except CancelledError
     results.update({p.call.id: r for p, r in zip(plain, outcomes)})
-    for p in (p for p in prepared if isinstance(p, Prepared) and p.protected):     # 5.13, call order
-        decision = await approval_gate.request(p)                                  # input-required … working
+    for p in (p for p in prepared if isinstance(p, Prepared) and p.protected):  # 5.13, call order
+        decision = await approval_gate.request(p)  # input-required … working
         if decision is Decision.APPROVE:
-            results[p.call.id] = await self._execute(p)                            # 5.9, 4.7, 4.8
+            results[p.call.id] = await self._execute(p)  # 5.9, 4.7, 4.8
         else:
-            results[p.call.id] = denied_result(p, reason=decision.reason)          # 5.10 / 5.14
+            results[p.call.id] = denied_result(p, reason=decision.reason)  # 5.10 / 5.14
             await emitter.tool_completed(p, ok=False)
-    return [results[c.id] for c in calls]                                          # 8.5, 9.10
+    return [results[c.id] for c in calls]  # 8.5, 9.10
 ```
 
 `_execute(p)` emits `tool_started` (with `start_status_message`), calls `mgr.call_tool(server, tool, args, timeout)`, converts the outcome with `ResultFormatter`, emits `tool_completed`, logs the Tool_Call record, and returns the `ToolResult`. Every non-cancellation exception becomes an error Tool_Result (9.7). The Task stays `working` (9.8).
@@ -651,14 +777,23 @@ async def run_turn(self, calls):
 #### `approval_gate.py`
 
 ```python
-class Decision(Enum): APPROVE; DENY; TIMEOUT
-def parse_approval_decision(message: Message, kw: ApprovalKeywords) -> Decision | None: ...   # pure (5.12)
+class Decision(Enum):
+    APPROVE
+    DENY
+    TIMEOUT
+
+
+def parse_approval_decision(
+    message: Message, kw: ApprovalKeywords
+) -> Decision | None: ...  # pure (5.12)
+
 
 class ApprovalGate:
     async def request(self, p: Prepared) -> Decision: ...
     def resolve(self, d: Decision) -> None: ...
     def discard(self) -> None: ...
-    pending: PendingApproval | None      # at most one per Task (5.13)
+
+    pending: PendingApproval | None  # at most one per Task (5.13)
 ```
 
 - `parse_approval_decision`: if any `DataPart` has `data["decision"]` exactly `"approve"` or `"deny"`, the first such part wins (structured data takes precedence). Otherwise, for each `TextPart`, `text.strip().casefold()` is compared with the casefolded keyword lists. Otherwise the result is `None`.
@@ -669,20 +804,29 @@ class ApprovalGate:
 
 ```python
 @dataclass(frozen=True)
-class ToolCall: id: str; name: str; arguments: str           # raw JSON text, unchanged (10.11)
+class ToolCall:
+    id: str
+    name: str
+    arguments: str  # raw JSON text, unchanged (10.11)
+
 
 @dataclass(frozen=True)
-class AssembledResponse: text: str; tool_calls: tuple[ToolCall, ...]
+class AssembledResponse:
+    text: str
+    tool_calls: tuple[ToolCall, ...]
 
-class StreamAssembler:                                        # pure, stateful accumulator
-    def feed(self, delta: Delta) -> str | None: ...           # returns non-empty text or None
+
+class StreamAssembler:  # pure, stateful accumulator
+    def feed(self, delta: Delta) -> str | None: ...  # returns non-empty text or None
     def finish(self, existing_ids: AbstractSet[str]) -> AssembledResponse: ...
+
 
 class LlmGateway:
     async def stream(self, messages: list[dict], tools: list[dict] | None) -> LlmStream: ...
 
-class LlmStream(AsyncIterator[str]):                          # yields text chunks
-    def result(self) -> AssembledResponse: ...                # after exhaustion
+
+class LlmStream(AsyncIterator[str]):  # yields text chunks
+    def result(self) -> AssembledResponse: ...  # after exhaustion
 ```
 
 - `StreamAssembler.feed`: text deltas are appended to a buffer and returned if non-empty. Tool-call fragments are grouped by `index`: the first non-empty `id` wins, the first non-empty `function.name` wins, and `function.arguments` strings are concatenated in arrival order. `finish` sorts by index (10.3) and assigns `call_<uuid4 hex>` to calls without an ID, avoiding `existing_ids` (10.11).
@@ -698,21 +842,31 @@ class LlmStream(AsyncIterator[str]):                          # yields text chun
 #### `manager.py`
 
 ```python
-class ServerState(Enum): AVAILABLE; UNAVAILABLE; DISABLED
+class ServerState(Enum):
+    AVAILABLE
+    UNAVAILABLE
+    DISABLED
 
-class McpSessionAdapter:                       # isolates SDK version differences
-    async def list_all_tools(self, timeout: float) -> list[McpToolInfo]: ...   # follows next_cursor (7.1)
+
+class McpSessionAdapter:  # isolates SDK version differences
+    async def list_all_tools(
+        self, timeout: float
+    ) -> list[McpToolInfo]: ...  # follows next_cursor (7.1)
     async def call_tool(self, name: str, args: dict, timeout: float) -> CallOutcome: ...
 
-class ServerSupervisor:                        # one asyncio.Task per enabled server
+
+class ServerSupervisor:  # one asyncio.Task per enabled server
     async def run(self) -> None: ...
 
+
 class McpManager:
-    async def start(self) -> None: ...          # concurrent first connect, returns after all settle (≤17 s)
+    async def start(self) -> None: ...  # concurrent first connect, returns after all settle (≤17 s)
     async def stop(self) -> None: ...
     async def refresh_available(self) -> None: ...
     def availability(self) -> Mapping[str, bool]: ...
-    async def call_tool(self, server: str, tool: str, args: dict, timeout: float) -> CallOutcome: ...
+    async def call_tool(
+        self, server: str, tool: str, args: dict, timeout: float
+    ) -> CallOutcome: ...
     def statuses(self) -> list[ServerStatus]: ...
 ```
 
@@ -720,22 +874,30 @@ Supervisor loop per enabled server (6.5–6.10):
 
 ```python
 async def run(self):
-    attempt = 0                                 # 0 = initial connect
+    attempt = 0  # 0 = initial connect
     while not self.stopping:
         try:
-            async with self._open_transport() as (read, write), \
-                       ClientSession(read, write) as session:
+            async with (
+                self._open_transport() as (read, write),
+                ClientSession(read, write) as session,
+            ):
                 with anyio.fail_after(15):
-                    await session.initialize()                                     # 6.7
-                tools = await adapter.list_all_tools(timeout=15)                   # 7.1 / 7.10
-                registry.replace_server(self.name, tools)                          # 7.11, 6.9
-                self.state = AVAILABLE; attempt = 0; self.first_settled.set()
-                await self._wait_closed_or_stop()                                  # transport EOF / stop event
+                    await session.initialize()  # 6.7
+                tools = await adapter.list_all_tools(timeout=15)  # 7.1 / 7.10
+                registry.replace_server(self.name, tools)  # 7.11, 6.9
+                self.state = AVAILABLE
+                attempt = 0
+                self.first_settled.set()
+                await self._wait_closed_or_stop()  # transport EOF / stop event
         except Exception as e:
             log.error("mcp_server_failed", server=self.name, reason=redact(str(e)))
-        self.state = UNAVAILABLE; registry.remove_server(self.name); self.first_settled.set()   # 6.8
-        if self.stopping or attempt >= 5: break                                    # 6.10
-        await asyncio.sleep(backoff_delay(attempt)); attempt += 1                  # 1, 2, 4, 8, 16 (cap 30)
+        self.state = UNAVAILABLE
+        registry.remove_server(self.name)
+        self.first_settled.set()  # 6.8
+        if self.stopping or attempt >= 5:
+            break  # 6.10
+        await asyncio.sleep(backoff_delay(attempt))
+        attempt += 1  # 1, 2, 4, 8, 16 (cap 30)
 ```
 
 - `backoff_delay(n) = min(1 * 2**n, 30)` (pure).
@@ -750,15 +912,18 @@ async def run(self):
 #### `registry.py`
 
 ```python
-def sanitize(s: str) -> str: ...                                               # pure: [^A-Za-z0-9_-] → "_"
-def assign_names(entries: Sequence[tuple[str, str]]) -> list[str]: ...         # pure, (server, tool) in order
-def compile_pattern(p: str) -> re.Pattern: ...                                  # pure: * → .*, ? → ., rest escaped
-def is_protected(policy: Mapping[str, Sequence[str]], server: str, tool: str) -> bool: ...   # pure
+def sanitize(s: str) -> str: ...  # pure: [^A-Za-z0-9_-] → "_"
+def assign_names(
+    entries: Sequence[tuple[str, str]],
+) -> list[str]: ...  # pure, (server, tool) in order
+def compile_pattern(p: str) -> re.Pattern: ...  # pure: * → .*, ? → ., rest escaped
+def is_protected(policy: Mapping[str, Sequence[str]], server: str, tool: str) -> bool: ...  # pure
+
 
 class ToolRegistry:
     def replace_server(self, server: str, tools: list[McpToolInfo]) -> None: ...
     def remove_server(self, server: str) -> None: ...
-    def snapshot(self) -> RegistrySnapshot: ...      # immutable view used by one request
+    def snapshot(self) -> RegistrySnapshot: ...  # immutable view used by one request
 ```
 
 - `assign_names`: for each `(server, tool)` in config order, then tool-list order, `base = sanitize(f"{server}__{tool}")[:64]`. If `base` is unused it is assigned. Otherwise, for k = 2, 3, …, the candidate is `base[:64 - len(f"_{k}")] + f"_{k}"`, and the first unused one is assigned (7.3, 7.7). The function is deterministic for the same input (7.12).
@@ -769,7 +934,7 @@ class ToolRegistry:
 #### `schema_translator.py`
 
 ```python
-def translate(server: str, tool: McpToolInfo, llm_name: str) -> dict | SchemaRejected: ...   # pure
+def translate(server: str, tool: McpToolInfo, llm_name: str) -> dict | SchemaRejected: ...  # pure
 ```
 
 - `jsonschema.validators.validator_for(schema).check_schema(schema)` failure → rejected with a warning (7.8). `type` present and not `"object"` → rejected (7.8).
@@ -779,10 +944,12 @@ def translate(server: str, tool: McpToolInfo, llm_name: str) -> dict | SchemaRej
 #### `result_formatter.py`
 
 ```python
-def content_to_text(items: Sequence[ContentItem]) -> str: ...      # pure (8.6, 8.11)
-def truncate(text: str, max_chars: int) -> str: ...                # pure (8.9)
+def content_to_text(items: Sequence[ContentItem]) -> str: ...  # pure (8.6, 8.11)
+def truncate(text: str, max_chars: int) -> str: ...  # pure (8.9)
 def timeout_text(llm_name: str, seconds: float) -> str: ...
-def exception_text(exc: BaseException, redactor: Redactor) -> str: ...   # "<TypeName>: <message>" redacted (9.7)
+def exception_text(
+    exc: BaseException, redactor: Redactor
+) -> str: ...  # "<TypeName>: <message>" redacted (9.7)
 ```
 
 - `content_to_text`: text items keep their text. Image, audio, and resource items become `"[<type> content" + (", mime type X" if mime) + (", uri Y" if uri) + "]"`. All items are joined with `"\n"` in received order. An empty list becomes `"The tool returned no content."`.
@@ -796,37 +963,67 @@ def exception_text(exc: BaseException, redactor: Redactor) -> str: ...   # "<Typ
 ```python
 @dataclass(frozen=True)
 class StateChange:
-    task_id: str; expected_from: frozenset[TaskState]; new: TaskState
-    status_message: str | None; metadata: Mapping[str, Any] | None
+    task_id: str
+    expected_from: frozenset[TaskState]
+    new: TaskState
+    status_message: str | None
+    metadata: Mapping[str, Any] | None
+
 
 @dataclass(frozen=True)
 class ArtifactWrite:
-    task_id: str; artifact_id: str; ordinal: int; text: str; closed: bool
+    task_id: str
+    artifact_id: str
+    ordinal: int
+    text: str
+    closed: bool
+
 
 @dataclass(frozen=True)
-class StorageTxn:                                           # pure description of ONE atomic commit
+class StorageTxn:  # pure description of ONE atomic commit
     context_id: str
-    now_ms: int                                             # Last_Activity / updated_at (epoch ms, wall clock)
-    appends: tuple[tuple[str | None, ChatMessage], ...] = ()   # (producing task_id, message), in order
-    system_prompt: SystemMessage | None | Unset = UNSET     # replace the single slot (12.7)
+    now_ms: int  # Last_Activity / updated_at (epoch ms, wall clock)
+    appends: tuple[
+        tuple[str | None, ChatMessage], ...
+    ] = ()  # (producing task_id, message), in order
+    system_prompt: SystemMessage | None | Unset = UNSET  # replace the single slot (12.7)
     state: StateChange | None = None
     artifacts: tuple[ArtifactWrite, ...] = ()
+
     def merge(self, other: "StorageTxn") -> "StorageTxn": ...
 
+
 class SessionStore(ABC):
-    async def commit(self, txn: StorageTxn) -> None: ...                    # all or nothing; raises StorageError / StaleState
-    async def create_task(self, task_id: str, context_id: str, now_ms: int,
-                          a2a_snapshot: str | None) -> bool: ...           # one txn: ensure Context + insert Task (submitted); True if Context new
-    async def get_history(self, context_id: str) -> tuple[SystemMessage | None, list[ChatMessage]]: ...
-    async def get_task(self, task_id: str) -> TaskRecord | None: ...        # includes artifacts in emission order
+    async def commit(
+        self, txn: StorageTxn
+    ) -> None: ...  # all or nothing; raises StorageError / StaleState
+    async def create_task(
+        self, task_id: str, context_id: str, now_ms: int, a2a_snapshot: str | None
+    ) -> bool: ...  # one txn: ensure Context + insert Task (submitted); True if Context new
+    async def get_history(
+        self, context_id: str
+    ) -> tuple[SystemMessage | None, list[ChatMessage]]: ...
+    async def get_task(
+        self, task_id: str
+    ) -> TaskRecord | None: ...  # includes artifacts in emission order
     async def list_tasks(self, query: TaskQuery) -> TaskPage: ...
-    async def active_task(self, context_id: str) -> str | None: ...         # submitted / working / input-required
-    async def set_a2a_snapshot(self, task_id: str, snapshot: str) -> None: ...   # Task_Store private column
-    async def delete_expired(self, cutoff_ms: int) -> list[str]: ...        # retention, one txn (11.11)
+    async def active_task(
+        self, context_id: str
+    ) -> str | None: ...  # submitted / working / input-required
+    async def set_a2a_snapshot(
+        self, task_id: str, snapshot: str
+    ) -> None: ...  # Task_Store private column
+    async def delete_expired(self, cutoff_ms: int) -> list[str]: ...  # retention, one txn (11.11)
+
     # convenience wrappers built on commit(): append, set_system_prompt, set_state
 
-class InMemorySessionStore(SessionStore): ...       # session/memory_store.py (storage.backend: memory; tests)
-class SQLiteSessionStore(SessionStore): ...         # session/sqlite_store.py (default)
+
+class InMemorySessionStore(
+    SessionStore
+): ...  # session/memory_store.py (storage.backend: memory; tests)
+
+
+class SQLiteSessionStore(SessionStore): ...  # session/sqlite_store.py (default)
 ```
 
 - **One transaction model for both backends.** Every write the Orchestrator, emitter, or recovery makes is a `StorageTxn`. The SQLite store runs it as one `BEGIN IMMEDIATE … COMMIT` on the writer thread. The memory store validates the whole transaction first and then applies it with no `await` in between, which is atomic on the event loop. Code above the interface cannot tell the two apart (11.10).
@@ -854,14 +1051,22 @@ class SQLiteSessionStore(SessionStore):
 ```python
 class Database:
     path: Path
+
     @classmethod
-    def open(cls, path: Path, *, create: bool) -> "Database": ...   # startup, before the loop; runs on the writer thread
-    def run_sync(self, fn: Callable[[sqlite3.Connection], T]) -> T: ...      # startup only (blocks the caller)
+    def open(
+        cls, path: Path, *, create: bool
+    ) -> "Database": ...  # startup, before the loop; runs on the writer thread
+    def run_sync(
+        self, fn: Callable[[sqlite3.Connection], T]
+    ) -> T: ...  # startup only (blocks the caller)
     async def read(self, fn: Callable[[sqlite3.Connection], T]) -> T: ...
     async def transaction(self, fn: Callable[[sqlite3.Connection], T]) -> T: ...
     def close(self) -> None: ...
 
-class StorageError(Exception): path: str; reason: str          # reason already redacted
+
+class StorageError(Exception):
+    path: str
+    reason: str  # reason already redacted
 ```
 
 - **Executor.** `ThreadPoolExecutor(max_workers=1, thread_name_prefix="local-agent-db")`. The connection is created inside that thread and never leaves it, so `check_same_thread` stays at its default. `read`/`transaction` use `loop.run_in_executor(self._executor, …)`, so the loop thread never blocks on SQLite (14.1, 18.14). One thread also serializes all transactions in submission order. The default `asyncio.to_thread` pool is not used, because a connection must not hop between threads.
@@ -873,11 +1078,14 @@ class StorageError(Exception): path: str; reason: str          # reason already 
 #### `storage/lock.py`: Storage_Lock (18.25–18.27)
 
 ```python
-class StorageInUse(Exception): path: str
+class StorageInUse(Exception):
+    path: str
+
+
 class StorageLock:
     @classmethod
-    def acquire(cls, storage_dir: Path, platform: str) -> "StorageLock": ...   # never blocks
-    def release(self) -> None: ...                                             # also implicit at process exit
+    def acquire(cls, storage_dir: Path, platform: str) -> "StorageLock": ...  # never blocks
+    def release(self) -> None: ...  # also implicit at process exit
 ```
 
 - File: `<storage_dir>/local-agent.lock`, opened with `os.open(O_RDWR | O_CREAT [| O_BINARY], 0o600)`. On POSIX it is `fchmod`ed to `0600` (17.36). On Windows it inherits the directory's protected DACL, which is re-applied explicitly when the file already existed (17.37).
@@ -910,18 +1118,39 @@ def apply(db: Database, path: str) -> int: ...                                  
 
 ```python
 RECOVERY_STATUS: Final = "The backend restarted while this task was running"
-RECOVERY_TOOL_RESULT: Final = "Tool call not completed: the backend restarted while this task was running"
+RECOVERY_TOOL_RESULT: Final = (
+    "Tool call not completed: the backend restarted while this task was running"
+)
+
 
 @dataclass(frozen=True)
-class TaskRow: task_id: str; context_id: str; state: TaskState; created_at_ms: int
+class TaskRow:
+    task_id: str
+    context_id: str
+    state: TaskState
+    created_at_ms: int
+
+
 @dataclass(frozen=True)
-class StoredMessage: seq: int; task_id: str | None; role: str; tool_calls: tuple[ToolCall, ...]; tool_call_id: str | None
+class StoredMessage:
+    seq: int
+    task_id: str | None
+    role: str
+    tool_calls: tuple[ToolCall, ...]
+    tool_call_id: str | None
+
+
 @dataclass(frozen=True)
 class RecoveryAction:
-    task_id: str; context_id: str; from_state: TaskState
-    synthetic_results: tuple[str, ...]           # tool_call_ids, in history order then Tool_Call order
+    task_id: str
+    context_id: str
+    from_state: TaskState
+    synthetic_results: tuple[str, ...]  # tool_call_ids, in history order then Tool_Call order
 
-def plan_recovery(tasks: Sequence[TaskRow], histories: Mapping[str, Sequence[StoredMessage]]) -> list[RecoveryAction]: ...  # pure
+
+def plan_recovery(
+    tasks: Sequence[TaskRow], histories: Mapping[str, Sequence[StoredMessage]]
+) -> list[RecoveryAction]: ...  # pure
 def run(db: Database, clock: Clock) -> RecoveryReport: ...
 ```
 
@@ -935,9 +1164,18 @@ def run(db: Database, clock: Clock) -> RecoveryReport: ...
 
 ```python
 @dataclass(frozen=True)
-class ContextActivity: context_id: str; last_activity_ms: int; has_live_task: bool   # submitted/working/input-required
-def select_expired(contexts: Sequence[ContextActivity], now_ms: int, idle_timeout_s: int) -> list[str]: ...  # pure
-async def sweep(store: SessionStore, runners: TaskRunnerRegistry, clock: Clock, idle_timeout_s: int) -> list[str]: ...
+class ContextActivity:
+    context_id: str
+    last_activity_ms: int
+    has_live_task: bool  # submitted/working/input-required
+
+
+def select_expired(
+    contexts: Sequence[ContextActivity], now_ms: int, idle_timeout_s: int
+) -> list[str]: ...  # pure
+async def sweep(
+    store: SessionStore, runners: TaskRunnerRegistry, clock: Clock, idle_timeout_s: int
+) -> list[str]: ...
 ```
 
 - `select_expired` returns the IDs with `now_ms - last_activity_ms > idle_timeout_s * 1000` and `not has_live_task`, in input order. Contexts with an Active_Task are never selected (11.12). `submitted` also counts as live, so a Task about to start is never deleted under it.
@@ -954,9 +1192,11 @@ class ProjectedTaskStore(TaskStore):
     def expect_creation(self, task_id: str) -> asyncio.Future[None]: ...
     async def save(self, task: Task, context: ServerCallContext) -> None: ...
     async def get(self, task_id: str, context: ServerCallContext) -> Task | None: ...
-    async def list(self, params: ListTasksRequest, context: ServerCallContext) -> ListTasksResponse: ...
+    async def list(
+        self, params: ListTasksRequest, context: ServerCallContext
+    ) -> ListTasksResponse: ...
     async def delete(self, task_id: str, context: ServerCallContext) -> None: ...
-    async def snapshot(self, task_id: str) -> Task: ...      # used by the executor for first events
+    async def snapshot(self, task_id: str) -> Task: ...  # used by the executor for first events
 ```
 
 - `save(task)`:
@@ -1022,21 +1262,25 @@ All OS-specific code lives in `oscompat/`. Every decision function is pure and t
 ```python
 @dataclass(frozen=True)
 class PlatformFacts:
-    system: str            # platform.system(): "Windows" | "Darwin" | "Linux" | other
-    release: str           # Windows build number, macOS product version, or "" on Linux
-    native_machine: str    # normalized: "x86_64" | "arm64" | other
+    system: str  # platform.system(): "Windows" | "Darwin" | "Linux" | other
+    release: str  # Windows build number, macOS product version, or "" on Linux
+    native_machine: str  # normalized: "x86_64" | "arm64" | other
     libc: tuple[str, str]  # platform.libc_ver(), ("glibc", "2.39") or ("", "")
-    implementation: str    # sys.implementation.name
+    implementation: str  # sys.implementation.name
     version: tuple[int, int]
-    gil_disabled: bool     # sysconfig.get_config_var("Py_GIL_DISABLED") == 1
+    gil_disabled: bool  # sysconfig.get_config_var("Py_GIL_DISABLED") == 1
+
 
 @dataclass(frozen=True)
 class PlatformVerdict:
     supported: bool
-    os_label: str; arch: str; build: str   # e.g. "Windows 10 build 19045", "x86_64", "CPython 3.14 (GIL)"
+    os_label: str
+    arch: str
+    build: str  # e.g. "Windows 10 build 19045", "x86_64", "CPython 3.14 (GIL)"
 
-def classify_platform(f: PlatformFacts) -> PlatformVerdict: ...   # pure (17.1, 17.2)
-def gather_facts() -> PlatformFacts: ...                           # I/O wrapper
+
+def classify_platform(f: PlatformFacts) -> PlatformVerdict: ...  # pure (17.1, 17.2)
+def gather_facts() -> PlatformFacts: ...  # I/O wrapper
 ```
 
 Supported iff CPython `(3, 14)` with the GIL enabled and one of the following:
@@ -1049,11 +1293,12 @@ Supported iff CPython `(3, 14)` with the GIL enabled and one of the following:
 #### `oscompat/event_loop.py`
 
 ```python
-def select_loop_factory(platform: str, uvloop_new_event_loop: Callable[[], AbstractEventLoop] | None
-                        ) -> Callable[[], AbstractEventLoop]:
+def select_loop_factory(
+    platform: str, uvloop_new_event_loop: Callable[[], AbstractEventLoop] | None
+) -> Callable[[], AbstractEventLoop]:
     if platform != "win32" and uvloop_new_event_loop is not None:
-        return uvloop_new_event_loop          # 17.29
-    return asyncio.EventLoop                  # Proactor on Windows, selector + pidfd/thread child watching on POSIX
+        return uvloop_new_event_loop  # 17.29
+    return asyncio.EventLoop  # Proactor on Windows, selector + pidfd/thread child watching on POSIX
 ```
 
 The wrapper tries `import uvloop` only when `sys.platform != "win32"`. No module calls a policy API (17.28). A unit test also scans `src/` for the deprecated names listed in the research table.
@@ -1062,8 +1307,12 @@ The wrapper tries `import uvloop` only when `sys.platform != "win32"`. No module
 
 ```python
 class PathFieldError(ValueError): ...
-def resolve_path_field(value: str, *, base_dir: str, home: str | None, platform: str) -> str: ...  # pure
-def has_separator(value: str, platform: str) -> bool: ...                                           # pure
+
+
+def resolve_path_field(
+    value: str, *, base_dir: str, home: str | None, platform: str
+) -> str: ...  # pure
+def has_separator(value: str, platform: str) -> bool: ...  # pure
 ```
 
 - Separators: `/` everywhere; also `\` on Windows. On POSIX `\` is an ordinary filename character and is kept literally (17.16). The function uses `PureWindowsPath`/`ntpath` or `PurePosixPath`/`posixpath` according to `platform`, never the host module, so it is testable on any OS.
@@ -1073,8 +1322,10 @@ def has_separator(value: str, platform: str) -> bool: ...                       
 
 ```python
 APP_DIR: Final = "local-agent"
-def default_storage_dir(platform: str, env: Mapping[str, str]) -> str: ...   # pure (17.35)
-def ensure_storage_dir(path: str) -> None: ...                               # I/O (17.38, 18.23)
+
+
+def default_storage_dir(platform: str, env: Mapping[str, str]) -> str: ...  # pure (17.35)
+def ensure_storage_dir(path: str) -> None: ...  # I/O (17.38, 18.23)
 ```
 
 - `default_storage_dir` reads variables through `lookup_env`, so lookups are case-insensitive on Windows:
@@ -1088,11 +1339,24 @@ def ensure_storage_dir(path: str) -> None: ...                               # I
 #### `oscompat/permissions.py`: user-only access (16.8, 16.9, 17.36, 17.37)
 
 ```python
-STORAGE_FILES: Final = ("local-agent.db", "local-agent.db-wal", "local-agent.db-shm", "local-agent.lock")
-def restrict_dir(path: str, platform: str) -> None: ...            # raises PermissionSetupError(path, os_reason)
+STORAGE_FILES: Final = (
+    "local-agent.db",
+    "local-agent.db-wal",
+    "local-agent.db-shm",
+    "local-agent.lock",
+)
+
+
+def restrict_dir(
+    path: str, platform: str
+) -> None: ...  # raises PermissionSetupError(path, os_reason)
 def restrict_file(path: str, platform: str) -> None: ...
-def restrict_storage(dir: str, platform: str) -> None: ...         # dir + every existing STORAGE_FILES entry
-def describe_access(path: str, platform: str) -> AccessReport: ... # for tests: mode bits, or the DACL's ACEs + protected flag
+def restrict_storage(
+    dir: str, platform: str
+) -> None: ...  # dir + every existing STORAGE_FILES entry
+def describe_access(
+    path: str, platform: str
+) -> AccessReport: ...  # for tests: mode bits, or the DACL's ACEs + protected flag
 ```
 
 - POSIX (17.36): `os.chmod(dir, 0o700)` and `os.chmod(file, 0o600)`, applied even when the files already exist with broader modes. Files the Backend creates are opened with mode `0o600` (`os.open`; the umask can only narrow it) and then `chmod`ed, so the result does not depend on the umask. On Unix, SQLite creates `-wal` and `-shm` with the same permission bits as the database file. They are `chmod`ed again right after `Database.open`, which covers files left by an older process.
@@ -1122,32 +1386,61 @@ def inherited_env(environ: Mapping[str, str], platform: str) -> dict[str, str]: 
 
 ```python
 @dataclass(frozen=True)
-class Resolved:  path: str; kind: Literal["native", "batch"]
+class Resolved:
+    path: str
+    kind: Literal["native", "batch"]
+
+
 @dataclass(frozen=True)
-class NotFound:  command: str; searched: tuple[str, ...]      # message: "no executable found for command 'npx'"
+class NotFound:
+    command: str
+    searched: tuple[str, ...]  # message: "no executable found for command 'npx'"
 
-def resolve_command(command: str, *, platform: str, path_value: str, pathext_value: str | None,
-                    base_dir: str, home: str | None, is_file: Callable[[str], bool]) -> Resolved | NotFound: ...  # pure
 
-class BatchArgRejected(ValueError):  position: int; char: str   # position is 1-based argument index
-def quote_batch_args(batch_path: str, args: Sequence[str]) -> str: ...        # pure (17.8, 17.9)
-def build_command_line(resolved: Resolved, args: Sequence[str], system_root: str) -> str: ...   # pure, Windows
+def resolve_command(
+    command: str,
+    *,
+    platform: str,
+    path_value: str,
+    pathext_value: str | None,
+    base_dir: str,
+    home: str | None,
+    is_file: Callable[[str], bool],
+) -> Resolved | NotFound: ...  # pure
+
+
+class BatchArgRejected(ValueError):
+    position: int
+    char: str  # position is 1-based argument index
+
+
+def quote_batch_args(batch_path: str, args: Sequence[str]) -> str: ...  # pure (17.8, 17.9)
+def build_command_line(
+    resolved: Resolved, args: Sequence[str], system_root: str
+) -> str: ...  # pure, Windows
+
 
 @dataclass(frozen=True)
 class SpawnSpec:
     platform: str
-    argv: tuple[str, ...] | None          # POSIX: [exe, *args]
-    command_line: str | None              # Windows: full CreateProcess command line
-    application: str | None               # Windows: lpApplicationName (exe, or cmd.exe for batch)
-    env: Mapping[str, str]; cwd: str
-    start_new_session: bool               # POSIX
-    creationflags: int                    # Windows: CREATE_NEW_PROCESS_GROUP | CREATE_SUSPENDED | CREATE_NO_WINDOW
-    grace_s: float                        # set at termination time from ShutdownReason
+    argv: tuple[str, ...] | None  # POSIX: [exe, *args]
+    command_line: str | None  # Windows: full CreateProcess command line
+    application: str | None  # Windows: lpApplicationName (exe, or cmd.exe for batch)
+    env: Mapping[str, str]
+    cwd: str
+    start_new_session: bool  # POSIX
+    creationflags: int  # Windows: CREATE_NEW_PROCESS_GROUP | CREATE_SUSPENDED | CREATE_NO_WINDOW
+    grace_s: float  # set at termination time from ShutdownReason
 
-async def build_spawn_spec(cfg: StdioServerConfig, config_dir: str, platform: str) -> SpawnSpec: ...  # resolution I/O via to_thread
+
+async def build_spawn_spec(
+    cfg: StdioServerConfig, config_dir: str, platform: str
+) -> SpawnSpec: ...  # resolution I/O via to_thread
 async def spawn(spec: SpawnSpec) -> TreeHandle: ...
-async def terminate_tree(h: TreeHandle, grace_s: float, stdin_wait_s: float) -> TerminationReport: ...
-def termination_plan(platform: str, job_assigned: bool) -> tuple[Step, ...]: ...                         # pure
+async def terminate_tree(
+    h: TreeHandle, grace_s: float, stdin_wait_s: float
+) -> TerminationReport: ...
+def termination_plan(platform: str, job_assigned: bool) -> tuple[Step, ...]: ...  # pure
 ```
 
 **Executable resolution (17.4–17.6).** `resolve_command` is a pure re-implementation instead of a `shutil.which` call. `shutil.which` reads `PATHEXT` from the Backend's environment rather than the child's, may prepend the current directory on Windows, and since 3.12 also matches extensionless files. The rules:
@@ -1195,11 +1488,20 @@ def termination_plan(platform: str, job_assigned: bool) -> tuple[Step, ...]: ...
 
 ```python
 @asynccontextmanager
-async def managed_stdio_client(spec: SpawnSpec, *, grace: Callable[[], float]
-                               ) -> AsyncIterator[tuple[MemoryObjectReceiveStream[SessionMessage | Exception],
-                                                        MemoryObjectSendStream[SessionMessage]]]: ...
-def encode_line(msg: SessionMessage) -> bytes: ...          # pure: model_dump_json(by_alias=True, exclude_unset=True) + "\n", UTF-8
-def decode_line(line: bytes) -> SessionMessage | Exception: ...   # pure: UTF-8 strict, SDK JSON-RPC adapter
+async def managed_stdio_client(
+    spec: SpawnSpec, *, grace: Callable[[], float]
+) -> AsyncIterator[
+    tuple[
+        MemoryObjectReceiveStream[SessionMessage | Exception],
+        MemoryObjectSendStream[SessionMessage],
+    ]
+]: ...
+def encode_line(
+    msg: SessionMessage,
+) -> bytes: ...  # pure: model_dump_json(by_alias=True, exclude_unset=True) + "\n", UTF-8
+def decode_line(
+    line: bytes,
+) -> SessionMessage | Exception: ...  # pure: UTF-8 strict, SDK JSON-RPC adapter
 ```
 
 - The reader splits stdout on `b"\n"` (bytes level, so a multi-byte UTF-8 sequence split across reads is never decoded early), strips one trailing `b"\r"` for servers that write CRLF, and decodes UTF-8 strictly regardless of locale (17.27). Invalid UTF-8 or JSON yields an `Exception` item, which `ClientSession` surfaces the same way as with the SDK transport.
@@ -1210,13 +1512,21 @@ def decode_line(line: bytes) -> SessionMessage | Exception: ...   # pure: UTF-8 
 #### `oscompat/signals.py`: Shutdown_Signal handling
 
 ```python
-class ShutdownReason(Enum): SIGNAL; CONSOLE_CLOSE
+class ShutdownReason(Enum):
+    SIGNAL
+    CONSOLE_CLOSE
+
+
 class ShutdownController:
-    def request(self, reason: ShutdownReason) -> None: ...   # idempotent; second request → force
+    def request(self, reason: ShutdownReason) -> None: ...  # idempotent; second request → force
     @property
-    def grace_s(self) -> float: ...                          # 5.0, 2.0 for CONSOLE_CLOSE, 0.0 when forced
-    async def run(self) -> int: ...                          # executes Graceful_Shutdown, returns exit status 0
-def install(loop: AbstractEventLoop, ctl: ShutdownController, platform: str) -> Callable[[], None]: ...  # returns uninstall
+    def grace_s(self) -> float: ...  # 5.0, 2.0 for CONSOLE_CLOSE, 0.0 when forced
+    async def run(self) -> int: ...  # executes Graceful_Shutdown, returns exit status 0
+
+
+def install(
+    loop: AbstractEventLoop, ctl: ShutdownController, platform: str
+) -> Callable[[], None]: ...  # returns uninstall
 ```
 
 - POSIX: `loop.add_signal_handler(SIGINT | SIGTERM, ctl.request, SIGNAL)`, which works with both asyncio and uvloop.
@@ -1236,14 +1546,28 @@ def install(loop: AbstractEventLoop, ctl: ShutdownController, platform: str) -> 
 
 ```python
 @dataclass(frozen=True)
-class BindTarget: family: int; address: str; required: bool      # required=False only for the localhost ::1 socket
-@dataclass(frozen=True)
-class SockOpts: exclusive_addr_use: bool; reuse_addr: bool; reuse_port: bool; v6only: bool
+class BindTarget:
+    family: int
+    address: str
+    required: bool  # required=False only for the localhost ::1 socket
 
-def plan_binds(host: str, port: int) -> list[BindTarget]: ...            # pure (17.30)
-def socket_options(platform: str, family: int) -> SockOpts: ...          # pure (17.32)
-def classify_bind_error(exc: OSError) -> Literal["conflict", "unavailable", "other"]: ...   # pure (1.8, 17.31)
-def bind_all(host: str, port: int, platform: str) -> list[socket.socket]: ...               # I/O, before the loop
+
+@dataclass(frozen=True)
+class SockOpts:
+    exclusive_addr_use: bool
+    reuse_addr: bool
+    reuse_port: bool
+    v6only: bool
+
+
+def plan_binds(host: str, port: int) -> list[BindTarget]: ...  # pure (17.30)
+def socket_options(platform: str, family: int) -> SockOpts: ...  # pure (17.32)
+def classify_bind_error(
+    exc: OSError,
+) -> Literal["conflict", "unavailable", "other"]: ...  # pure (1.8, 17.31)
+def bind_all(
+    host: str, port: int, platform: str
+) -> list[socket.socket]: ...  # I/O, before the loop
 ```
 
 - `plan_binds`: `localhost` → `[127.0.0.1 (required), ::1 (optional)]` without name resolution (17.30). An IPv4 or IPv6 literal → one required target. Any other hostname → `getaddrinfo(host, port, type=SOCK_STREAM)`, first result, one required target.
@@ -1272,13 +1596,14 @@ def bind_all(host: str, port: int, platform: str) -> list[socket.socket]: ...   
 
 ```python
 class ServerConfig(BaseModel):
-    host: str = "127.0.0.1"                                       # 13.4, 16.1; "localhost" → 127.0.0.1 + optional ::1 (17.30)
-    port: int = Field(10000, ge=1, le=65535)                      # 1.7
-    bearer_token: SecretStr | None = None                         # required (≥32) for non-loopback, 16.5
-    cors_allowed_origins: list[AnyHttpOrigin] = []                # exact scheme://host[:port], 16.4/16.6
+    host: str = "127.0.0.1"  # 13.4, 16.1; "localhost" → 127.0.0.1 + optional ::1 (17.30)
+    port: int = Field(10000, ge=1, le=65535)  # 1.7
+    bearer_token: SecretStr | None = None  # required (≥32) for non-loopback, 16.5
+    cors_allowed_origins: list[AnyHttpOrigin] = []  # exact scheme://host[:port], 16.4/16.6
+
 
 class LLMConfig(BaseModel):
-    model: str = Field(min_length=1)                              # e.g. "ollama_chat/llama3.1"
+    model: str = Field(min_length=1)  # e.g. "ollama_chat/llama3.1"
     api_base: AnyHttpUrl | None = None
     api_key: SecretStr | None = None
     temperature: float = Field(0.7, ge=0, le=2)
@@ -1286,15 +1611,18 @@ class LLMConfig(BaseModel):
     request_timeout_s: float = Field(120, gt=0)
     native_function_calling: bool = True
 
+
 class AgentConfig(BaseModel):
     name: str = Field("Local Agent", min_length=1)
     description: str = Field("Local AI assistant with MCP tools", min_length=1)
     version: str = Field("0.1.0", min_length=1)
     base_instructions: str | None = None
 
+
 class ApprovalKeywords(BaseModel):
     approve: list[str] = ["approve", "yes"]
-    deny: list[str] = ["deny", "no"]                              # validator: non-empty, disjoint after casefold
+    deny: list[str] = ["deny", "no"]  # validator: non-empty, disjoint after casefold
+
 
 class OrchestrationConfig(BaseModel):
     max_tool_iterations: int = Field(10, ge=1, le=100)
@@ -1306,35 +1634,44 @@ class OrchestrationConfig(BaseModel):
     session_idle_timeout_s: int | None = Field(None, ge=60, le=604_800)
     per_session_discovery: bool = False
 
+
 ServerName = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9_-]{1,32}$")]
+
 
 class StdioServerConfig(BaseModel):
     name: ServerName
     transport: Literal["stdio"]
     enabled: bool = True
-    command: str = Field(min_length=1)                             # Path_Field iff it contains a separator (17.5)
-    args: list[str] = []                                           # never path-processed (17.20)
-    cwd: str | None = None                                         # Path_Field; None → config file directory (17.19)
-    env: dict[str, SecretStr] = {}                                 # merged per 17.22
+    command: str = Field(min_length=1)  # Path_Field iff it contains a separator (17.5)
+    args: list[str] = []  # never path-processed (17.20)
+    cwd: str | None = None  # Path_Field; None → config file directory (17.19)
+    env: dict[str, SecretStr] = {}  # merged per 17.22
+
 
 class SseServerConfig(BaseModel):
     name: ServerName
     transport: Literal["sse"]
     enabled: bool = True
-    url: HttpUrl                                                   # http/https only
+    url: HttpUrl  # http/https only
     headers: dict[str, SecretStr] = {}
+
 
 MCPServerConfig = Annotated[StdioServerConfig | SseServerConfig, Field(discriminator="transport")]
 
 PermissionPattern = Annotated[str, StringConstraints(min_length=1, max_length=128)]
 
+
 class LoggingConfig(BaseModel):
     level: Literal["debug", "info", "warning", "error"] = "info"
 
+
 class StorageConfig(BaseModel):
-    backend: Literal["sqlite", "memory"] = "sqlite"                # 13.9; other values → issue at "storage.backend"
-    path: str | None = None                                        # Path_Field (13.10); None → default_storage_dir (17.35);
-                                                                   # accepted and ignored for "memory" (13.11)
+    backend: Literal["sqlite", "memory"] = (
+        "sqlite"  # 13.9; other values → issue at "storage.backend"
+    )
+    path: str | None = None  # Path_Field (13.10); None → default_storage_dir (17.35);
+    # accepted and ignored for "memory" (13.11)
+
 
 class BackendConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -1343,9 +1680,10 @@ class BackendConfig(BaseModel):
     agent: AgentConfig = AgentConfig()
     orchestration: OrchestrationConfig = OrchestrationConfig()
     mcp_servers: list[MCPServerConfig] = Field([], max_length=50)
-    permissions: dict[str, list[PermissionPattern]] = {}           # each list ≤100 entries
+    permissions: dict[str, list[PermissionPattern]] = {}  # each list ≤100 entries
     logging: LoggingConfig = LoggingConfig()
     storage: StorageConfig = StorageConfig()
+
 
 def storage_directory(cfg: BackendConfig, env: Mapping[str, str], platform: str) -> str | None:
     """None for the memory backend; otherwise cfg.storage.path (already resolved) or default_storage_dir()."""
@@ -1386,57 +1724,97 @@ storage:
 ```python
 # Chat messages kept in Message_History (OpenAI wire shape via to_openai())
 @dataclass(frozen=True)
-class SystemMessage:    content: str
+class SystemMessage:
+    content: str
+
+
 @dataclass(frozen=True)
-class UserMessage:      content: str
+class UserMessage:
+    content: str
+
+
 @dataclass(frozen=True)
-class AssistantMessage: content: str | None; tool_calls: tuple[ToolCall, ...] = ()
+class AssistantMessage:
+    content: str | None
+    tool_calls: tuple[ToolCall, ...] = ()
+
+
 @dataclass(frozen=True)
-class ToolMessage:      tool_call_id: str; content: str
+class ToolMessage:
+    tool_call_id: str
+    content: str
+
+
 ChatMessage = SystemMessage | UserMessage | AssistantMessage | ToolMessage
+
 
 @dataclass
 class ContextRecord:
     context_id: str
-    system_prompt: SystemMessage | None           # single slot (12.7)
-    history: list[ChatMessage]                    # user/assistant/tool only
-    created_at_ms: int                            # epoch ms, wall clock (18.3)
-    last_activity_ms: int                         # epoch ms, wall clock; was time.monotonic() before persistence (11.11)
+    system_prompt: SystemMessage | None  # single slot (12.7)
+    history: list[ChatMessage]  # user/assistant/tool only
+    created_at_ms: int  # epoch ms, wall clock (18.3)
+    last_activity_ms: int  # epoch ms, wall clock; was time.monotonic() before persistence (11.11)
+
 
 @dataclass(frozen=True)
 class ArtifactRecord:
-    artifact_id: str                              # "response-<n>", unique within the Task (3.3)
-    ordinal: int                                  # emission order within the Task (18.4, 18.7)
-    text: str                                     # full reassembled text (3.4); prefix of emitted text after a crash (18.12)
-    closed: bool                                  # last-chunk event emitted
+    artifact_id: str  # "response-<n>", unique within the Task (3.3)
+    ordinal: int  # emission order within the Task (18.4, 18.7)
+    text: str  # full reassembled text (3.4); prefix of emitted text after a crash (18.12)
+    closed: bool  # last-chunk event emitted
+
 
 @dataclass(frozen=True)
 class TaskRecord:
-    task_id: str; context_id: str; state: TaskState
-    status_message: str | None                    # latest, redacted (16.11)
+    task_id: str
+    context_id: str
+    state: TaskState
+    status_message: str | None  # latest, redacted (16.11)
     metadata: Mapping[str, Any]
-    created_at_ms: int; updated_at_ms: int
-    artifacts: tuple[ArtifactRecord, ...]         # ordered by ordinal
+    created_at_ms: int
+    updated_at_ms: int
+    artifacts: tuple[ArtifactRecord, ...]  # ordered by ordinal
+
 
 @dataclass(frozen=True)
 class McpToolInfo:
-    name: str; description: str | None; input_schema: dict
+    name: str
+    description: str | None
+    input_schema: dict
+
 
 @dataclass(frozen=True)
 class RegisteredTool:
-    llm_name: str; server: str; tool: str; description: str | None
-    openai_def: dict; protected: bool
+    llm_name: str
+    server: str
+    tool: str
+    description: str | None
+    openai_def: dict
+    protected: bool
+
 
 @dataclass(frozen=True)
 class ToolResult:
-    call_id: str; llm_name: str; server: str | None; tool: str | None
-    text: str; outcome: Literal["success", "error", "timeout", "denied"]
+    call_id: str
+    llm_name: str
+    server: str | None
+    tool: str | None
+    text: str
+    outcome: Literal["success", "error", "timeout", "denied"]
+
     def as_message(self) -> ToolMessage: ...
+
 
 @dataclass
 class PendingApproval:
-    call_id: str; llm_name: str; server: str; tool: str; args: dict
-    future: asyncio.Future[Decision]; since: float
+    call_id: str
+    llm_name: str
+    server: str
+    tool: str
+    args: dict
+    future: asyncio.Future[Decision]
+    since: float
 ```
 
 The Message_History invariant ("history integrity", 11.5) is stated over these types. Every `ToolMessage.tool_call_id` appears in an earlier `AssistantMessage.tool_calls`. In a Task that reached a terminal state, every such ID has exactly one `ToolMessage`. With the SQLite backend the invariant also holds for every committed database state: the assistant message and its Tool_Results are committed in separate transactions, but a Task's terminal transaction includes any missing results (18.11), and Restart_Recovery adds them for Tasks that never reached a terminal transaction (18.16).
@@ -1507,18 +1885,31 @@ CREATE TABLE artifacts (
 
 ```python
 @dataclass
-class TreeHandle:                       # one per running stdio MCP_Server
-    pid: int                            # also the POSIX pgid
+class TreeHandle:  # one per running stdio MCP_Server
+    pid: int  # also the POSIX pgid
     platform: str
     process: anyio.abc.Process | WinPopenProcess
-    job: int | None                     # Windows job handle; None if assignment failed
+    job: int | None  # Windows job handle; None if assignment failed
     job_assigned: bool
 
-class Step(Enum): CLOSE_STDIN; GRACEFUL; WAIT_GRACE; FORCE_GROUP; FORCE_JOB; FORCE_TASKKILL; REAP
+
+class Step(Enum):
+    CLOSE_STDIN
+    GRACEFUL
+    WAIT_GRACE
+    FORCE_GROUP
+    FORCE_JOB
+    FORCE_TASKKILL
+    REAP
+
 
 @dataclass(frozen=True)
 class TerminationReport:
-    pid: int; steps: tuple[Step, ...]; forced: bool; duration_ms: int; survivors: tuple[int, ...]
+    pid: int
+    steps: tuple[Step, ...]
+    forced: bool
+    duration_ms: int
+    survivors: tuple[int, ...]
 ```
 
 `termination_plan(platform, job_assigned)` returns the step template: POSIX `CLOSE_STDIN, GRACEFUL, WAIT_GRACE, FORCE_GROUP, REAP`; Windows `… FORCE_JOB …`, or `… FORCE_TASKKILL …` when no job. `terminate_tree` executes the template and skips the remaining steps once the tree is empty. `survivors` must be empty (17.12); a non-empty value is logged at error level.
@@ -2221,9 +2612,11 @@ Pure-core property and unit tests run on every runner, with the platform passed 
 
 ```python
 windows_only = pytest.mark.skipif(sys.platform != "win32", reason="Windows-specific OS behaviour")
-posix_only   = pytest.mark.skipif(sys.platform == "win32", reason="POSIX-specific OS behaviour")
-macos_only   = pytest.mark.skipif(sys.platform != "darwin", reason="macOS-specific OS behaviour")
-linux_only   = pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux-specific OS behaviour")
+posix_only = pytest.mark.skipif(sys.platform == "win32", reason="POSIX-specific OS behaviour")
+macos_only = pytest.mark.skipif(sys.platform != "darwin", reason="macOS-specific OS behaviour")
+linux_only = pytest.mark.skipif(
+    not sys.platform.startswith("linux"), reason="Linux-specific OS behaviour"
+)
 ```
 
 | Test | Marker | Checks |

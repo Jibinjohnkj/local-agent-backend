@@ -1,0 +1,213 @@
+{
+  "contexts": [
+    {
+      "context_id": "ctx-alpha",
+      "system_prompt": "You are helpful.\r\nAnswer in plain text. 😀",
+      "created_at_ms": 1700000000000,
+      "last_activity_ms": 1700000090000,
+      "messages": [
+        {
+          "seq": 0,
+          "task_id": "task-completed",
+          "role": "user",
+          "content": "Read my file.\r\nThen summarize it 🎉 café",
+          "tool_calls": null,
+          "tool_call_id": null
+        },
+        {
+          "seq": 1,
+          "task_id": "task-completed",
+          "role": "assistant",
+          "content": "",
+          "tool_calls": "[{\"id\": \"call_1\", \"name\": \"fs__read_file\", \"arguments\": \"{path: 'C:\\\\temp\\\\a.txt', \"}, {\"id\": \"call_2\", \"name\": \"fs__list_dir\", \"arguments\": \"{\\\"path\\\": \\\"/tmp\\\"}\"}, {\"id\": \"call_3\", \"name\": \"web__fetch\", \"arguments\": \"not json at all 🔍\\r\\n\"}]",
+          "tool_call_id": null
+        },
+        {
+          "seq": 2,
+          "task_id": "task-completed",
+          "role": "tool",
+          "content": "Error: bad arguments\r\n",
+          "tool_calls": null,
+          "tool_call_id": "call_1"
+        },
+        {
+          "seq": 3,
+          "task_id": "task-completed",
+          "role": "tool",
+          "content": "a.txt\r\nb.txt",
+          "tool_calls": null,
+          "tool_call_id": "call_2"
+        },
+        {
+          "seq": 4,
+          "task_id": "task-completed",
+          "role": "tool",
+          "content": "🤷 nothing found",
+          "tool_calls": null,
+          "tool_call_id": "call_3"
+        },
+        {
+          "seq": 5,
+          "task_id": "task-completed",
+          "role": "assistant",
+          "content": "Done 👍\r\nTwo lines.",
+          "tool_calls": null,
+          "tool_call_id": null
+        },
+        {
+          "seq": 6,
+          "task_id": "task-failed",
+          "role": "user",
+          "content": "Try again",
+          "tool_calls": null,
+          "tool_call_id": null
+        },
+        {
+          "seq": 7,
+          "task_id": "task-failed",
+          "role": "assistant",
+          "content": null,
+          "tool_calls": null,
+          "tool_call_id": null
+        }
+      ],
+      "tasks": [
+        {
+          "task_id": "task-canceled",
+          "state": "canceled",
+          "status_message": "Canceled by the client",
+          "metadata": "{}",
+          "created_at_ms": 1700000080000,
+          "updated_at_ms": 1700000090000,
+          "a2a_snapshot": null,
+          "artifacts": [
+            {
+              "artifact_id": "art-1",
+              "ordinal": 0,
+              "text": "",
+              "closed": 1
+            }
+          ]
+        },
+        {
+          "task_id": "task-completed",
+          "state": "completed",
+          "status_message": null,
+          "metadata": "{}",
+          "created_at_ms": 1700000010000,
+          "updated_at_ms": 1700000050000,
+          "a2a_snapshot": "{\"history\": [], \"metadata\": {\"source\": \"fixture\"}}",
+          "artifacts": [
+            {
+              "artifact_id": "art-1",
+              "ordinal": 0,
+              "text": "Done 👍\r\nTwo lines.",
+              "closed": 1
+            }
+          ]
+        },
+        {
+          "task_id": "task-failed",
+          "state": "failed",
+          "status_message": "The model request failed 💥",
+          "metadata": "{\"attempt\": 2}",
+          "created_at_ms": 1700000060000,
+          "updated_at_ms": 1700000070000,
+          "a2a_snapshot": null,
+          "artifacts": [
+            {
+              "artifact_id": "art-1",
+              "ordinal": 0,
+              "text": "Partial answer 🚧",
+              "closed": 0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "context_id": "ctx-beta",
+      "system_prompt": null,
+      "created_at_ms": 1700000100000,
+      "last_activity_ms": 1700000130000,
+      "messages": [
+        {
+          "seq": 0,
+          "task_id": "task-working",
+          "role": "user",
+          "content": "Line one\rLine two\nLine three",
+          "tool_calls": null,
+          "tool_call_id": null
+        },
+        {
+          "seq": 1,
+          "task_id": null,
+          "role": "assistant",
+          "content": "No producing task recorded",
+          "tool_calls": null,
+          "tool_call_id": null
+        }
+      ],
+      "tasks": [
+        {
+          "task_id": "task-input",
+          "state": "input-required",
+          "status_message": "Approve fs__write_file?",
+          "metadata": "{\"tool_call_id\": \"call_9\"}",
+          "created_at_ms": 1700000125000,
+          "updated_at_ms": 1700000130000,
+          "a2a_snapshot": null,
+          "artifacts": [
+            {
+              "artifact_id": "art-1",
+              "ordinal": 0,
+              "text": "",
+              "closed": 0
+            }
+          ]
+        },
+        {
+          "task_id": "task-submitted",
+          "state": "submitted",
+          "status_message": null,
+          "metadata": "{}",
+          "created_at_ms": 1700000110000,
+          "updated_at_ms": 1700000110000,
+          "a2a_snapshot": null,
+          "artifacts": []
+        },
+        {
+          "task_id": "task-working",
+          "state": "working",
+          "status_message": "Discovering local tools...",
+          "metadata": "{}",
+          "created_at_ms": 1700000115000,
+          "updated_at_ms": 1700000120000,
+          "a2a_snapshot": "{\"history\": [], \"metadata\": {\"source\": \"fixture\"}}",
+          "artifacts": [
+            {
+              "artifact_id": "art-1",
+              "ordinal": 0,
+              "text": "First response, closed.\r\n",
+              "closed": 1
+            },
+            {
+              "artifact_id": "art-2",
+              "ordinal": 1,
+              "text": "Second response, still streaming",
+              "closed": 0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "context_id": "ctx-gamma",
+      "system_prompt": "",
+      "created_at_ms": 1700000200000,
+      "last_activity_ms": 1700000200000,
+      "messages": [],
+      "tasks": []
+    }
+  ]
+}

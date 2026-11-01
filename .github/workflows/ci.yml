@@ -1,0 +1,110 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        # Windows x86_64, macOS arm64, macOS x86_64, Linux x86_64, Linux arm64 (17.34).
+        # `macos-15-intel` is the Intel macOS label; confirm it is still offered when this changes.
+        os: [windows-latest, macos-latest, macos-15-intel, ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    defaults:
+      run:
+        # One shell on every runner, so quoting in the commands below behaves the same.
+        shell: bash
+    env:
+      # "3.14" selects the standard (GIL-enabled) build, never 3.14t.
+      UV_PYTHON: "3.14"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Install Python 3.14
+        run: uv python install 3.14
+
+      # Binary wheels only (17.33). Fails if the lock needs a source build on this runner.
+      - name: Sync dependencies
+        run: uv sync --locked --no-build
+
+      # Logs the SQLite version (18.24) and checks that the SDK imports without SQLAlchemy.
+      - name: Check SDK imports and log SQLite version
+        run: >-
+          uv run python -c
+          "import sqlite3, a2a.server.request_handlers, a2a.server.tasks; print(sqlite3.sqlite_version)"
+
+      # The litellm wheel must import with no network access. The proxy below is unreachable.
+      - name: Import litellm offline (Windows)
+        if: runner.os == 'Windows'
+        env:
+          HTTPS_PROXY: http://127.0.0.1:9
+          HTTP_PROXY: http://127.0.0.1:9
+        run: uv run python -c "import litellm"
+
+      - name: Ruff check
+        run: uv run ruff check .
+
+      - name: Ruff format check
+        run: uv run ruff format --check .
+
+      - name: Mypy
+        run: uv run mypy src
+
+      - name: Test
+        env:
+          HYPOTHESIS_PROFILE: ci
+        run: >-
+          uv run pytest tests/unit tests/property tests/integration
+          -m "not manual and not llm"
+          -W error::DeprecationWarning:asyncio
+          -W error::DeprecationWarning:local_agent
+
+      # Written by tests/property/test_transcript_equivalence.py (Property 46).
+      - name: Upload transcript digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: transcripts-${{ matrix.os }}
+          path: artifacts/transcripts-*.sha256
+          if-no-files-found: error
+
+  equivalence:
+    name: transcript equivalence
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          pattern: transcripts-*
+          path: digests
+
+      # Every runner must report the same digest (17.3). Five runners, one distinct value.
+      - name: Compare digests
+        shell: bash
+        run: |
+          set -eu
+          count=$(find digests -type f -name '*.sha256' | wc -l | tr -d ' ')
+          echo "digest files: $count"
+          find digests -type f -name '*.sha256' | sort | while read -r f; do
+            echo "$f: $(cat "$f")"
+          done
+          if [ "$count" -ne 5 ]; then
+            echo "expected 5 digests, found $count" >&2
+            exit 1
+          fi
+          distinct=$(find digests -type f -name '*.sha256' -exec awk 'NR==1 {print $1}' {} + | sort -u | wc -l | tr -d ' ')
+          if [ "$distinct" -ne 1 ]; then
+            echo "transcript digests differ across runners" >&2
+            exit 1
+          fi

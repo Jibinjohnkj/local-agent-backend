@@ -182,7 +182,7 @@ Use `"deny"` to refuse. A plain text part with `yes`, `approve`, `no`, or `deny`
 |---|---|
 | `/health` shows a server as `unavailable` | Is Node.js installed and `npx` on your PATH? Search the logs for `mcp_server_failed`; it names the command and the folders searched. |
 | Task fails with "local LLM is unreachable" | Is Ollama running? Does `llm.api_base` match its address? |
-| The model answers without using tools | Use a model with tool calling (`llama3.1`, `qwen2.5`). For models without native support, set `llm.native_function_calling: false`. |
+| The model answers without using tools | Use a model with tool calling (`llama3.1`, `qwen2.5`). For a model without native support, set `llm.native_function_calling: false` and write the model as `ollama/<name>`, not `ollama_chat/<name>`. LiteLLM sends tools natively on `ollama_chat/`, and Ollama then fails the Task with "does not support tools". |
 | "Context is busy" error | The conversation already has a running or paused task. Wait, approve or deny, or cancel it first. |
 | Startup fails with "cannot bind" | Another process is using the port. Change `server.port`. |
 | Startup fails with a config report | Each problem is listed with its field path, for example `mcp_servers.0.command`. |

@@ -1,0 +1,9 @@
+# Normalize text files to LF in the repository and in every checkout, including
+# Windows (core.autocrlf), so source, config, and YAML files stay byte-identical
+# across Supported_Platforms (17.25, 17.26).
+* text=auto eol=lf
+
+# Test fixtures are byte-exact (CRLF, BOM, invalid UTF-8, SQLite databases).
+# Git must never convert them on checkout or commit.
+tests/fixtures/** -text
+*.db binary
